@@ -1,0 +1,5 @@
+from uuid import UUID
+
+DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
+DEFAULT_PLANNER_CODE = "default_planner"
+DEFAULT_OPERATOR_CODE = "default_operator"
