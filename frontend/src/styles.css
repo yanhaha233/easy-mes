@@ -587,6 +587,10 @@ h2 {
   font-size: 13px;
 }
 
+.schedule-line .el-alert {
+  grid-column: 1 / -1;
+}
+
 .el-drawer__footer {
   border-top: 1px solid #edf1f5;
 }

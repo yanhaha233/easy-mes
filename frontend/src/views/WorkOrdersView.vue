@@ -242,7 +242,13 @@
     <el-dialog v-model="scheduleDialogOpen" title="按工序派工" width="560px">
       <el-form label-position="top" @submit.prevent>
         <el-form-item label="默认操作员">
-          <el-select v-model="scheduleForm.operator_code" filterable placeholder="选择操作员">
+          <el-select
+            v-model="scheduleForm.operator_code"
+            clearable
+            filterable
+            placeholder="选择后批量填充可做工序"
+            @change="applyDefaultScheduleOperator"
+          >
             <el-option
               v-for="item in operatorOptions"
               :key="item.code"
@@ -263,12 +269,19 @@
             </div>
             <el-select v-model="assignment.operator_code" filterable placeholder="选择操作员">
               <el-option
-                v-for="item in operatorOptions"
+                v-for="item in eligibleOperatorOptions(assignment.operation_seq)"
                 :key="item.code"
                 :label="`${item.code} ${item.name}`"
                 :value="item.code"
               />
             </el-select>
+            <el-alert
+              v-if="eligibleOperatorOptions(assignment.operation_seq).length === 0"
+              title="没有操作员具备该工序权限"
+              type="warning"
+              :closable="false"
+              show-icon
+            />
           </article>
         </div>
       </el-form>
@@ -286,7 +299,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search, View } from '@element-plus/icons-vue'
 import { ApiError } from '../api/client'
-import { listMaster } from '../api/masterData'
+import { getWorkerOperationSkills, listMaster } from '../api/masterData'
 import {
   cancelWorkOrder,
   confirmWorkOrder,
@@ -327,6 +340,7 @@ const materials = ref<Material[]>([])
 const workers = ref<Worker[]>([])
 const scheduleTarget = ref<WorkOrderListItem | null>(null)
 const scheduleDetail = ref<WorkOrder | null>(null)
+const workerSkillCodes = ref<Record<string, string[]>>({})
 
 const state = reactive({
   items: [] as WorkOrderListItem[],
@@ -526,6 +540,7 @@ async function scheduleOrder(row: WorkOrderListItem) {
   }
   try {
     const workOrder = await getWorkOrder(row.id)
+    await ensureWorkerSkillsLoaded()
     const defaultOperator = operatorOptions.value[0]?.code || ''
     scheduleTarget.value = row
     scheduleDetail.value = workOrder
@@ -534,7 +549,7 @@ async function scheduleOrder(row: WorkOrderListItem) {
       .filter((operation) => operation.status === 'pending')
       .map((operation) => ({
         operation_seq: operation.seq,
-        operator_code: operation.assigned_operator_code || defaultOperator,
+        operator_code: defaultAssignmentForOperation(operation.seq, operation.assigned_operator_code),
       }))
     scheduleDialogOpen.value = true
   } catch (error) {
@@ -543,8 +558,17 @@ async function scheduleOrder(row: WorkOrderListItem) {
 }
 
 async function submitSchedule() {
+  const invalidAssignments = scheduleForm.operation_assignments.filter(
+    (assignment) =>
+      !assignment.operator_code ||
+      !eligibleOperatorOptions(assignment.operation_seq).some((item) => item.code === assignment.operator_code),
+  )
   if (!scheduleTarget.value || scheduleForm.operation_assignments.some((item) => !item.operator_code)) {
     ElMessage.warning('请为每道工序选择操作员')
+    return
+  }
+  if (invalidAssignments.length) {
+    ElMessage.warning('存在不具备工序权限的派工，请重新选择')
     return
   }
   saving.value = true
@@ -565,13 +589,57 @@ async function submitSchedule() {
   }
 }
 
+async function ensureWorkerSkillsLoaded() {
+  const missingWorkers = operatorOptions.value.filter((worker) => !workerSkillCodes.value[worker.id])
+  if (!missingWorkers.length) {
+    return
+  }
+  const entries = await Promise.all(
+    missingWorkers.map(async (worker) => {
+      const skills = await getWorkerOperationSkills(worker.id)
+      return [worker.id, skills.map((item) => item.operation_code)] as const
+    }),
+  )
+  workerSkillCodes.value = {
+    ...workerSkillCodes.value,
+    ...Object.fromEntries(entries),
+  }
+}
+
+function operationBySeq(seq: number) {
+  return scheduleDetail.value?.operations.find((item) => item.seq === seq)
+}
+
+function eligibleOperatorOptions(seq: number) {
+  const operationCode = operationBySeq(seq)?.operation_code
+  if (!operationCode) {
+    return []
+  }
+  return operatorOptions.value.filter((worker) => workerSkillCodes.value[worker.id]?.includes(operationCode))
+}
+
+function defaultAssignmentForOperation(seq: number, currentCode: string | null) {
+  const eligible = eligibleOperatorOptions(seq)
+  if (currentCode && eligible.some((item) => item.code === currentCode)) {
+    return currentCode
+  }
+  const defaultOperator = eligible.find((item) => item.code === scheduleForm.operator_code)
+  return defaultOperator?.code || eligible[0]?.code || ''
+}
+
+function applyDefaultScheduleOperator() {
+  for (const assignment of scheduleForm.operation_assignments) {
+    assignment.operator_code = defaultAssignmentForOperation(assignment.operation_seq, scheduleForm.operator_code)
+  }
+}
+
 function operationName(seq: number) {
-  const operation = scheduleDetail.value?.operations.find((item) => item.seq === seq)
+  const operation = operationBySeq(seq)
   return operation?.operation_name || ''
 }
 
 function operationWorkCenter(seq: number) {
-  const operation = scheduleDetail.value?.operations.find((item) => item.seq === seq)
+  const operation = operationBySeq(seq)
   return operation ? `${operation.work_center_code} ${operation.work_center_name}` : ''
 }
 
