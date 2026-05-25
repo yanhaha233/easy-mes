@@ -179,7 +179,7 @@ async def start_operation(
                 "INVALID_OPERATION_STATUS",
                 f"当前工序状态为 {operation.status}，不能开工",
             )
-        if work_order.status not in {"pending", "scheduled"}:
+        if work_order.status not in {"pending", "scheduled", "in_progress"}:
             business_error(
                 status.HTTP_400_BAD_REQUEST,
                 "INVALID_WORK_ORDER_STATUS",

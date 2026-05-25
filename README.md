@@ -1,20 +1,15 @@
 # Easy MES
 
-Easy MES 是一个面向中小制造企业的精简 MES 项目。项目原则来自两份规则文档：
-
-- `SKILL.md`：控制功能边界，避免把系统做成大型 MES。
-- `mes-business-flows.md`：控制业务流程、状态机、报工、追溯等实现规则。
-
-当前阶段先搭骨架，第一块业务从“工单创建：BOM 展开、工艺路线绑定、工序拆分”开始。
+Easy MES 是一个面向中小制造企业的精简 MES 项目。项目目标是先跑通“计划下达到工位、现场数据回收”的主流程，避免一开始就做成复杂的大型 MES。
 
 ## 技术栈
 
 | 层 | 选择 |
-|----|------|
+| --- | --- |
 | 后端 | FastAPI + SQLAlchemy + PostgreSQL |
 | 前端 | Vue3 + Vite + TypeScript |
 | 管理端 UI | Element Plus |
-| 缓存 | Redis（二期或需要幂等缓存时启用） |
+| 缓存 | Redis，后续需要幂等缓存或队列时启用 |
 | 部署 | Docker Compose |
 
 ## 目录结构
@@ -24,39 +19,40 @@ easy-mes/
   backend/                 # FastAPI 后端
     app/
       api/v1/              # HTTP API
-      core/                # 配置、基础能力
+      core/                # 配置和默认值
       db/                  # 数据库会话
       models/              # ORM 模型
-      repositories/        # 数据访问
       schemas/             # Pydantic DTO
       services/            # 业务服务
+      scripts/             # 本地运维和演示脚本
     tests/
   frontend/                # Vue3 前端
     src/
-      views/
-      components/
+      api/
       router/
-      stores/
+      types/
+      views/
   docs/                    # 业务规格文档
 ```
 
-## 后端启动
+## 本地启动
 
-先确保本机安装 Python 3.12+，或在 PyCharm 中配置一个 Python 解释器。
-
-先启动本地依赖服务：
+先启动 PostgreSQL 和 Redis：
 
 ```powershell
 cd D:\code\easy-mes
 docker compose up -d
 ```
 
-PostgreSQL 暴露端口为 `15432`，Redis 暴露端口为 `16379`，用于避开本机常见端口占用。
+PostgreSQL 暴露端口为 `15432`，Redis 暴露端口为 `16379`。
+
+### 后端
 
 ```powershell
 cd D:\code\easy-mes\backend
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -e ".[dev]"
+.\.venv\Scripts\alembic upgrade head
 .\.venv\Scripts\uvicorn app.main:app --reload --port 8010
 ```
 
@@ -66,7 +62,7 @@ python -m venv .venv
 GET http://127.0.0.1:8010/api/v1/health
 ```
 
-## 前端启动
+### 前端
 
 PowerShell 环境下优先使用 `npm.cmd`，避免执行策略拦截 `npm.ps1`。
 
@@ -82,12 +78,61 @@ npm.cmd run dev
 http://127.0.0.1:5180/
 ```
 
-## 开发顺序
+## 演示数据
 
-1. 建核心数据表：物料、BOM、工艺路线、工单、工单物料、工单工序、幂等键、审计日志。
-2. 实现工单创建接口。
-3. 实现工单详情查询。
-4. 实现基础档案的最小录入与列表。
-5. 再进入齐套检查和报工。
+数据库迁移完成后，可以写入一套默认计划员、操作员、质检员可直接使用的演示档案：
 
-任何新功能先对照 `SKILL.md` 判断是否应该做，再对照 `mes-business-flows.md` 判断业务如何流转。
+```powershell
+cd D:\code\easy-mes\backend
+.\.venv\Scripts\python -m app.scripts.seed_demo
+```
+
+脚本会创建：
+
+- 演示物料、BOM、工艺路线
+- CNC、去毛刺、质检工位
+- A 班、默认计划员、默认操作员、默认质检员
+- 划伤、尺寸超差、毛刺残留等不良原因
+- 一张已确认并派工的演示工单
+
+如果只想初始化基础档案，不创建演示工单：
+
+```powershell
+.\.venv\Scripts\python -m app.scripts.seed_demo --skip-work-order
+```
+
+## 自动校验
+
+GitHub Actions 会在 `main` 分支 push 和 pull request 时执行：
+
+- 后端依赖安装
+- Alembic 数据库迁移
+- `ruff check app tests`
+- `pytest`
+- 一条从基础档案到追溯查询的主流程集成测试
+- 前端 `npm ci`
+- 前端 `npm run build`
+
+本地只跑快速单元测试：
+
+```powershell
+cd D:\code\easy-mes\backend
+.\.venv\Scripts\python -m pytest
+```
+
+本地跑主流程集成测试时，需要先启动 PostgreSQL 并完成迁移：
+
+```powershell
+cd D:\code\easy-mes\backend
+$env:EASY_MES_RUN_INTEGRATION="1"
+.\.venv\Scripts\python -m pytest
+```
+
+## 开发原则
+
+任何新功能先对照 `SKILL.md` 判断是否应该做，再对照 `mes-business-flows.md` 判断业务如何流转。当前阶段优先保证：
+
+- 基础档案完整可录入
+- 工单主流程能跑通
+- 车间报工在手机竖屏下足够快
+- 状态机、幂等键、审计日志、追溯链不被绕过
