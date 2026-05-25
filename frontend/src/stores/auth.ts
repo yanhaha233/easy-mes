@@ -27,8 +27,8 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAuthenticated = computed(() => Boolean(token.value && user.value))
 
-  async function login(username: string, password: string) {
-    const response = await loginApi(username, password)
+  async function login(tenantId: string, username: string, password: string) {
+    const response = await loginApi(tenantId, username, password)
     token.value = response.access_token
     user.value = response.user
     window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, response.access_token)

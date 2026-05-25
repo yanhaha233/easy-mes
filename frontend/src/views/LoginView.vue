@@ -10,6 +10,9 @@
       </div>
 
       <el-form class="login-form" label-position="top" @submit.prevent="submit">
+        <el-form-item label="租户 ID">
+          <el-input v-model="form.tenant_id" autocomplete="organization" size="large" />
+        </el-form-item>
         <el-form-item label="账号">
           <el-input v-model="form.username" autocomplete="username" size="large" />
         </el-form-item>
@@ -36,6 +39,7 @@
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { DEFAULT_TENANT_ID } from '../api/auth'
 import { ApiError } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
@@ -46,6 +50,7 @@ const authStore = useAuthStore()
 const loading = ref(false)
 const error = ref('')
 const form = reactive({
+  tenant_id: DEFAULT_TENANT_ID,
   username: 'planner',
   password: 'planner123',
 })
@@ -57,7 +62,8 @@ const demoAccounts = [
   { label: '管理员', username: 'admin', password: 'admin123' },
 ]
 
-function fillDemo(account: { username: string; password: string }) {
+function fillDemo(account: { username: string; password: string; tenant_id?: string }) {
+  form.tenant_id = account.tenant_id ?? DEFAULT_TENANT_ID
   form.username = account.username
   form.password = account.password
 }
@@ -66,7 +72,7 @@ async function submit() {
   error.value = ''
   loading.value = true
   try {
-    await authStore.login(form.username, form.password)
+    await authStore.login(form.tenant_id, form.username, form.password)
     await router.replace((route.query.redirect as string) || '/')
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : '登录失败'

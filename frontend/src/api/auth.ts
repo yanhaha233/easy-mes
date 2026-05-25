@@ -1,10 +1,12 @@
 import { apiRequest } from './client'
 import type { CurrentUser, LoginResponse } from '../types/auth'
 
-export function login(username: string, password: string) {
+export const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001'
+
+export function login(tenantId: string, username: string, password: string) {
   return apiRequest<LoginResponse>('/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ tenant_id: tenantId, username, password }),
   })
 }
 
