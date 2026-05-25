@@ -80,6 +80,20 @@ npm.cmd run dev
 http://127.0.0.1:5180/
 ```
 
+## 生产 MVP 部署
+
+生产部署使用 `docker-compose.prod.yml`，配置模板在 `deploy/.env.production.example`。
+
+```powershell
+Copy-Item deploy\.env.production.example .env.prod
+docker compose --env-file .env.prod -f docker-compose.prod.yml build
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
+cd backend
+python -m app.scripts.smoke_check --base-url http://127.0.0.1:8080
+```
+
+上线、备份、回滚和试点验收按 `deploy/production-runbook.md` 执行。生产级 MVP 的功能边界见 `docs/production-mvp-scope.md`。
+
 ## 演示数据
 
 数据库迁移完成后，可以写入一套默认计划员、操作员、质检员可直接使用的演示档案：
