@@ -5,6 +5,8 @@ import type {
   ProductionReceiptCreatePayload,
   WorkOrder,
   WorkOrderCreatePayload,
+  WorkOrderImportResponse,
+  WorkOrderImportRowPayload,
   WorkOrderListItem,
   WorkOrderReceiptResponse,
   WorkOrderSchedulePayload,
@@ -35,6 +37,18 @@ export async function createWorkOrder(payload: WorkOrderCreatePayload) {
         'Idempotency-Key': idempotencyKey,
       },
       body: JSON.stringify(payload),
+    }),
+  )
+}
+
+export async function importWorkOrders(rows: WorkOrderImportRowPayload[]) {
+  return withIdempotencyKey('work-order:import', (idempotencyKey) =>
+    apiRequest<WorkOrderImportResponse>('/work-orders/import', {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify({ rows }),
     }),
   )
 }

@@ -14,6 +14,8 @@ from app.schemas.work_order import (
     ProductionReceiptCreate,
     WorkOrderCancel,
     WorkOrderCreate,
+    WorkOrderImportPayload,
+    WorkOrderImportResponse,
     WorkOrderListItem,
     WorkOrderRead,
     WorkOrderReceiptResponse,
@@ -30,6 +32,7 @@ from app.services.work_order import (
     schedule_work_order,
     serialize_work_order,
 )
+from app.services.work_order_import import import_work_orders
 
 router = APIRouter(tags=["work-orders"])
 
@@ -70,6 +73,21 @@ async def create_work_order_endpoint(
             detail={"code": "IDEMPOTENCY_KEY_REQUIRED", "message": "缺少 Idempotency-Key 请求头"},
         )
     return await create_work_order(db, payload, actor, idempotency_key)
+
+
+@router.post("/work-orders/import", response_model=WorkOrderImportResponse)
+async def import_work_orders_endpoint(
+    payload: WorkOrderImportPayload,
+    db: AsyncSession = Depends(get_db_session),
+    actor: Actor = Depends(get_default_actor),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    if not idempotency_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "IDEMPOTENCY_KEY_REQUIRED", "message": "缺少 Idempotency-Key 请求头"},
+        )
+    return await import_work_orders(db, payload, actor, idempotency_key)
 
 
 @router.post("/work-orders/{work_order_no}/confirm", response_model=WorkOrderRead)

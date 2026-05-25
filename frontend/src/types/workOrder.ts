@@ -116,6 +116,32 @@ export interface WorkOrderCreatePayload {
   remark: string | null
 }
 
+export interface WorkOrderImportRowPayload {
+  row_no: number
+  material_code: string | null
+  quantity: string | null
+  due_date: string | null
+  priority: string | null
+  external_ref: string | null
+  customer_name: string | null
+  remark: string | null
+}
+
+export interface WorkOrderImportResult {
+  row_no: number
+  status: 'accepted' | 'failed'
+  work_order_no: string | null
+  error_code: string | null
+  error_message: string | null
+}
+
+export interface WorkOrderImportResponse {
+  total: number
+  accepted_count: number
+  failed_count: number
+  items: WorkOrderImportResult[]
+}
+
 export interface WorkOrderSchedulePayload {
   operator_code: string | null
   operation_assignments?: Array<{

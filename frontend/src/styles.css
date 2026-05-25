@@ -153,6 +153,12 @@ textarea {
   margin-bottom: 12px;
 }
 
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .eyebrow {
   margin: 0 0 6px;
   color: #657484;
@@ -462,6 +468,13 @@ h2 {
   width: 160px;
 }
 
+.dialog-summary {
+  float: left;
+  color: #657484;
+  font-size: 13px;
+  line-height: 32px;
+}
+
 .desktop-table {
   width: 100%;
 }
@@ -650,6 +663,11 @@ h2 {
   }
 
   .page-hero .el-button {
+    width: 100%;
+  }
+
+  .hero-actions {
+    flex-direction: column;
     width: 100%;
   }
 

@@ -6,7 +6,10 @@
         <h1>工单管理</h1>
         <p class="hero-copy">第一版只做工单创建：按激活 BOM 和工艺路线展开，不排产、不扣料。</p>
       </div>
-      <el-button type="primary" :icon="Plus" @click="openCreate">新建工单</el-button>
+      <div class="hero-actions">
+        <el-button :icon="Upload" @click="openImport">导入工单</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">新建工单</el-button>
+      </div>
     </section>
 
     <section class="sheet">
@@ -212,6 +215,38 @@
       </template>
     </el-drawer>
 
+    <el-dialog v-model="importDialogOpen" title="导入工单" width="760px">
+      <el-form label-position="top" @submit.prevent>
+        <el-form-item label="Excel / CSV 内容">
+          <el-input
+            v-model="importText"
+            type="textarea"
+            :rows="10"
+            :placeholder="importPlaceholder"
+          />
+        </el-form-item>
+      </el-form>
+      <el-table v-if="importResult" :data="importResult.items" max-height="260">
+        <el-table-column prop="row_no" label="行号" width="80" />
+        <el-table-column label="结果" width="120">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 'accepted' ? 'success' : 'danger'" effect="plain">
+              {{ row.status === 'accepted' ? '已导入' : '失败' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="work_order_no" label="工单号" min-width="150" />
+        <el-table-column prop="error_message" label="错误" min-width="220" />
+      </el-table>
+      <template #footer>
+        <span v-if="importResult" class="dialog-summary">
+          成功 {{ importResult.accepted_count }} / 失败 {{ importResult.failed_count }}
+        </span>
+        <el-button @click="importDialogOpen = false">关闭</el-button>
+        <el-button type="primary" :loading="importLoading" @click="submitImport">导入</el-button>
+      </template>
+    </el-dialog>
+
     <el-drawer v-model="detailDrawerOpen" :title="detail?.work_order_no || '工单详情'" size="680px" destroy-on-close>
       <div v-if="detail" class="detail-stack">
         <section class="detail-section">
@@ -353,7 +388,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search, View } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search, Upload, View } from '@element-plus/icons-vue'
 import { ApiError } from '../api/client'
 import { getWorkerOperationSkills, listMaster } from '../api/masterData'
 import { approveBackfillRequest, listBackfillRequests, rejectBackfillRequest } from '../api/operations'
@@ -363,6 +398,7 @@ import {
   createWorkOrder,
   getWorkOrder,
   getWorkOrderTraceability,
+  importWorkOrders,
   listWorkOrders,
   receiveWorkOrder,
   scheduleWorkOrder,
@@ -373,6 +409,8 @@ import type {
   Priority,
   TraceTimelineEvent,
   WorkOrder,
+  WorkOrderImportResponse,
+  WorkOrderImportRowPayload,
   WorkOrderListItem,
   WorkOrderSource,
   WorkOrderStatus,
@@ -388,19 +426,27 @@ import {
 const pageSize = 20
 const route = useRoute()
 const createDrawerOpen = ref(false)
+const importDialogOpen = ref(false)
 const scheduleDialogOpen = ref(false)
 const detailDrawerOpen = ref(false)
 const saving = ref(false)
+const importLoading = ref(false)
 const traceLoading = ref(false)
 const backfillLoading = ref(false)
 const detail = ref<WorkOrder | null>(null)
 const trace = ref<WorkOrderTraceability | null>(null)
+const importResult = ref<WorkOrderImportResponse | null>(null)
 const materials = ref<Material[]>([])
 const workers = ref<Worker[]>([])
 const pendingBackfills = ref<OperationBackfillRequestRead[]>([])
 const scheduleTarget = ref<WorkOrderListItem | null>(null)
 const scheduleDetail = ref<WorkOrder | null>(null)
 const workerSkillCodes = ref<Record<string, string[]>>({})
+const importText = ref('')
+const importPlaceholder = [
+  '物料编码\t数量\t交期\t优先级\t外部单号\t客户\t备注',
+  'P-MVP-001\t100\t2026-06-30\t普通\tSO-001\t客户A\t首批试产',
+].join('\n')
 
 const state = reactive({
   items: [] as WorkOrderListItem[],
@@ -479,6 +525,107 @@ function emptyToNull(value: string) {
   return trimmed ? trimmed : null
 }
 
+type ImportColumn = Exclude<keyof WorkOrderImportRowPayload, 'row_no'>
+
+const importColumnAliases: Record<ImportColumn, string[]> = {
+  material_code: ['material_code', '物料编码', '生产物料', '物料'],
+  quantity: ['quantity', '数量', '计划数量'],
+  due_date: ['due_date', '交期', '需求日期', '计划交期'],
+  priority: ['priority', '优先级'],
+  external_ref: ['external_ref', '外部单号', '订单号', '销售订单', 'erp单号'],
+  customer_name: ['customer_name', '客户', '客户名称'],
+  remark: ['remark', '备注'],
+}
+
+const defaultImportColumns: ImportColumn[] = [
+  'material_code',
+  'quantity',
+  'due_date',
+  'priority',
+  'external_ref',
+  'customer_name',
+  'remark',
+]
+
+function normalizeImportHeader(value: string) {
+  return value.trim().replace(/\s+/g, '').toLowerCase()
+}
+
+function columnForHeader(value: string): ImportColumn | null {
+  const normalized = normalizeImportHeader(value)
+  for (const [column, aliases] of Object.entries(importColumnAliases) as Array<[ImportColumn, string[]]>) {
+    if (aliases.some((alias) => normalizeImportHeader(alias) === normalized)) {
+      return column
+    }
+  }
+  return null
+}
+
+function splitDelimitedLine(line: string, delimiter: string) {
+  const cells: string[] = []
+  let current = ''
+  let quoted = false
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]
+    if (char === '"') {
+      if (quoted && line[index + 1] === '"') {
+        current += '"'
+        index += 1
+      } else {
+        quoted = !quoted
+      }
+      continue
+    }
+    if (char === delimiter && !quoted) {
+      cells.push(current.trim())
+      current = ''
+      continue
+    }
+    current += char
+  }
+  cells.push(current.trim())
+  return cells
+}
+
+function parseImportRows(raw: string): WorkOrderImportRowPayload[] {
+  const lines = raw
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .filter((line) => line.trim())
+  if (!lines.length) {
+    return []
+  }
+  const delimiter = lines[0].includes('\t') ? '\t' : ','
+  const firstCells = splitDelimitedLine(lines[0], delimiter)
+  const headerColumns = firstCells.map(columnForHeader)
+  const hasHeader = headerColumns.some(Boolean)
+  const columns = hasHeader ? headerColumns : defaultImportColumns
+  const dataLines = hasHeader ? lines.slice(1) : lines
+  const firstRowNo = hasHeader ? 2 : 1
+  return dataLines.map((line, index) => {
+    const cells = splitDelimitedLine(line, delimiter)
+    const row: Omit<WorkOrderImportRowPayload, 'row_no'> = {
+      material_code: null,
+      quantity: null,
+      due_date: null,
+      priority: null,
+      external_ref: null,
+      customer_name: null,
+      remark: null,
+    }
+    columns.forEach((column, columnIndex) => {
+      if (!column) {
+        return
+      }
+      row[column] = cells[columnIndex]?.trim() || null
+    })
+    return {
+      row_no: firstRowNo + index,
+      ...row,
+    }
+  })
+}
+
 async function loadMaterials() {
   try {
     const page = await listMaster('materials', { is_active: true, limit: 100, offset: 0 })
@@ -540,6 +687,12 @@ function openCreate() {
   createDrawerOpen.value = true
 }
 
+function openImport() {
+  importText.value = ''
+  importResult.value = null
+  importDialogOpen.value = true
+}
+
 function validateForm() {
   if (!form.material_code) {
     ElMessage.warning('请选择生产物料')
@@ -551,6 +704,32 @@ function validateForm() {
     return false
   }
   return true
+}
+
+async function submitImport() {
+  const rows = parseImportRows(importText.value)
+  if (!rows.length) {
+    ElMessage.warning('请粘贴工单导入内容')
+    return
+  }
+  importLoading.value = true
+  try {
+    const response = await importWorkOrders(rows)
+    importResult.value = response
+    if (response.accepted_count > 0) {
+      state.page = 1
+      await loadOrders()
+    }
+    if (response.failed_count > 0) {
+      ElMessage.warning(`已导入 ${response.accepted_count} 行，失败 ${response.failed_count} 行`)
+    } else {
+      ElMessage.success(`已导入 ${response.accepted_count} 行`)
+    }
+  } catch (error) {
+    showError(error)
+  } finally {
+    importLoading.value = false
+  }
 }
 
 async function submitCreate() {

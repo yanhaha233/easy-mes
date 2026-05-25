@@ -24,6 +24,36 @@ class WorkOrderCreate(BaseModel):
     remark: str | None = None
 
 
+class WorkOrderImportRow(BaseModel):
+    row_no: int = Field(ge=1)
+    material_code: str | None = None
+    quantity: str | None = None
+    due_date: str | None = None
+    priority: str | None = None
+    external_ref: str | None = None
+    customer_name: str | None = None
+    remark: str | None = None
+
+
+class WorkOrderImportPayload(BaseModel):
+    rows: list[WorkOrderImportRow] = Field(min_length=1, max_length=500)
+
+
+class WorkOrderImportResult(BaseModel):
+    row_no: int
+    status: Literal["accepted", "failed"]
+    work_order_no: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class WorkOrderImportResponse(BaseModel):
+    total: int
+    accepted_count: int
+    failed_count: int
+    items: list[WorkOrderImportResult]
+
+
 class ProductionReceiptCreate(BaseModel):
     good_qty: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=6)
     lot_no: str | None = Field(default=None, max_length=128)
