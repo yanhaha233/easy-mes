@@ -108,6 +108,12 @@ cd D:\code\easy-mes\backend
 
 `--skip-work-order` 和 `--skip-work-orders` 都可用。
 
+如果只想清空默认租户数据，不重新创建档案和演示工单：
+
+```powershell
+.\.venv\Scripts\python -m app.scripts.seed_demo --reset-only
+```
+
 过期的退出 token 与幂等键可以定期清理，建议生产环境每天跑一次：
 
 ```powershell

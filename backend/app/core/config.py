@@ -29,6 +29,7 @@ class Settings(BaseSettings):
         default="http://127.0.0.1:5180,http://localhost:5180",
         validation_alias=AliasChoices("CORS_ORIGINS", "EASY_MES_CORS_ORIGINS"),
     )
+    log_level: str = Field(default="INFO", validation_alias=AliasChoices("LOG_LEVEL", "EASY_MES_LOG_LEVEL"))
 
     @model_validator(mode="after")
     def validate_production_secret(self) -> "Settings":

@@ -1,3 +1,6 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -10,10 +13,23 @@ from app.api.v1.quality import router as quality_router
 from app.api.v1.reports import router as report_router
 from app.api.v1.work_orders import router as work_order_router
 from app.core.config import settings
+from app.core.logging import configure_logging
+from app.core.request_context import REQUEST_ID_HEADER, TRACE_ID_HEADER
+from app.db.session import dispose_engine
+from app.middleware.request_context import RequestContextMiddleware
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    try:
+        yield
+    finally:
+        await dispose_engine()
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title=settings.app_name)
+    configure_logging(settings.log_level)
+    app = FastAPI(title=settings.app_name, lifespan=lifespan)
     if settings.cors_origin_list:
         app.add_middleware(
             CORSMiddleware,
@@ -21,7 +37,9 @@ def create_app() -> FastAPI:
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
+            expose_headers=[REQUEST_ID_HEADER, TRACE_ID_HEADER],
         )
+    app.add_middleware(RequestContextMiddleware)
     app.include_router(auth_router, prefix=settings.api_v1_prefix)
     app.include_router(health_router, prefix=settings.api_v1_prefix)
     app.include_router(master_data_router, prefix=settings.api_v1_prefix)

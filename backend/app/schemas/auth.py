@@ -4,13 +4,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.core.defaults import DEFAULT_TENANT_ID
-
 UserRole = Literal["planner", "operator", "inspector", "admin"]
 
 
 class LoginRequest(BaseModel):
-    tenant_id: UUID = DEFAULT_TENANT_ID
+    tenant_id: UUID
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
 

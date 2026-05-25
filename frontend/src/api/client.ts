@@ -1,5 +1,4 @@
 const API_BASE = '/api/v1'
-export const AUTH_TOKEN_STORAGE_KEY = 'easy_mes_access_token'
 export const AUTH_EXPIRED_EVENT = 'easy-mes:auth-expired'
 
 export class ApiError extends Error {
@@ -43,17 +42,8 @@ async function readError(response: Response) {
   }
 }
 
-function authToken() {
-  const token = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)
-  return token ? `Bearer ${token}` : null
-}
-
 function buildHeaders(body: BodyInit | null | undefined, headers?: HeadersInit) {
   const merged = new Headers(headers)
-  const token = authToken()
-  if (token && !merged.has('Authorization')) {
-    merged.set('Authorization', token)
-  }
   if (body && !merged.has('Content-Type')) {
     merged.set('Content-Type', 'application/json')
   }
@@ -74,7 +64,7 @@ export async function apiRequest<T>(
 
   if (!response.ok) {
     const message = await readError(response)
-    if (response.status === 401 && path !== '/auth/login') {
+    if (response.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
       window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT))
     }
     throw new ApiError(response.status, message)

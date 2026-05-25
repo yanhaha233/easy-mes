@@ -70,6 +70,8 @@ class WorkOrderMaterial(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
     __tablename__ = "work_order_materials"
 
     work_order_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("work_orders.id"))
+    # Snapshot references: BOM versions may be changed or removed after release, so these ids intentionally
+    # do not carry foreign keys that would rewrite historical work-order semantics.
     bom_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     bom_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     bom_line_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
@@ -90,6 +92,7 @@ class WorkOrderOperation(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base)
     __table_args__ = (UniqueConstraint("work_order_id", "seq", name="uq_work_order_operations_order_seq"),)
 
     work_order_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("work_orders.id"))
+    # Snapshot references: routing definitions are mutable master data, while released operations must remain stable.
     routing_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     routing_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     routing_operation_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any
+from uuid import UUID
 
 from fastapi import HTTPException, status
 from fastapi.encoders import jsonable_encoder
@@ -76,6 +77,24 @@ def pick_operation(
     return operations[0]
 
 
+async def find_active_worker_by_code(session: AsyncSession, tenant_id: UUID, code: str) -> Worker | None:
+    return await session.scalar(
+        select(Worker).where(
+            Worker.tenant_id == tenant_id,
+            Worker.code == code,
+            Worker.deleted_at.is_(None),
+            Worker.is_active.is_(True),
+        )
+    )
+
+
+async def find_active_worker_by_id(session: AsyncSession, tenant_id: UUID, worker_id: UUID) -> Worker | None:
+    worker = await session.get(Worker, worker_id)
+    if worker and worker.tenant_id == tenant_id and worker.deleted_at is None and worker.is_active:
+        return worker
+    return None
+
+
 async def load_inspector(session: AsyncSession, actor: Actor, inspector_code: str | None) -> Worker:
     if actor.role != "admin" and not actor.worker_id and not actor.worker_code:
         business_error(status.HTTP_403_FORBIDDEN, "INSPECTOR_ACCOUNT_NOT_LINKED", "当前账号未绑定质检员档案")
@@ -84,27 +103,11 @@ async def load_inspector(session: AsyncSession, actor: Actor, inspector_code: st
         business_error(status.HTTP_403_FORBIDDEN, "INSPECTOR_CODE_MISMATCH", "不能代替其他质检员确认")
 
     if inspector_code:
-        worker = await session.scalar(
-            select(Worker).where(
-                Worker.tenant_id == actor.tenant_id,
-                Worker.code == inspector_code,
-                Worker.deleted_at.is_(None),
-                Worker.is_active.is_(True),
-            )
-        )
+        worker = await find_active_worker_by_code(session, actor.tenant_id, inspector_code)
     elif actor.worker_id:
-        worker = await session.get(Worker, actor.worker_id)
-        if worker and (worker.tenant_id != actor.tenant_id or worker.deleted_at is not None or not worker.is_active):
-            worker = None
+        worker = await find_active_worker_by_id(session, actor.tenant_id, actor.worker_id)
     elif actor.worker_code:
-        worker = await session.scalar(
-            select(Worker).where(
-                Worker.tenant_id == actor.tenant_id,
-                Worker.code == actor.worker_code,
-                Worker.deleted_at.is_(None),
-                Worker.is_active.is_(True),
-            )
-        )
+        worker = await find_active_worker_by_code(session, actor.tenant_id, actor.worker_code)
     else:
         worker = None
 

@@ -1,5 +1,6 @@
 from uuid import UUID
 
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.production import AuditLog
@@ -17,6 +18,7 @@ async def write_audit_log(
     to_state: str | None = None,
     detail: dict | None = None,
 ) -> None:
+    encoded_detail = jsonable_encoder(detail or {})
     session.add(
         AuditLog(
             tenant_id=tenant_id,
@@ -26,6 +28,6 @@ async def write_audit_log(
             action=action,
             from_state=from_state,
             to_state=to_state,
-            detail=detail or {},
+            detail=encoded_detail,
         )
     )

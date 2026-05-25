@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.defaults import DEFAULT_TENANT_ID
 from app.main import app
 
 pytestmark = pytest.mark.skipif(
@@ -24,7 +25,10 @@ def auth_headers(token: str, key: str | None = None) -> dict[str, str]:
 
 
 def login_as(client: TestClient, username: str, password: str) -> str:
-    response = client.post("/api/v1/auth/login", json={"username": username, "password": password})
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"tenant_id": str(DEFAULT_TENANT_ID), "username": username, "password": password},
+    )
     assert response.status_code == 200, response.text
     return response.json()["access_token"]
 

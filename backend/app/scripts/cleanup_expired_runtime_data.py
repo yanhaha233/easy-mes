@@ -5,14 +5,15 @@ from datetime import UTC, datetime
 
 from sqlalchemy import delete
 
-from app.db.session import AsyncSessionLocal, engine
+from app.db.session import dispose_engine, get_async_sessionmaker
 from app.models.auth import RevokedToken
 from app.models.production import IdempotencyKey
 
 
 async def cleanup_expired_runtime_data() -> dict[str, int]:
     now = datetime.now(UTC)
-    async with AsyncSessionLocal() as session:
+    async_session_local = get_async_sessionmaker()
+    async with async_session_local() as session:
         revoked_result = await session.execute(delete(RevokedToken).where(RevokedToken.expires_at <= now))
         idempotency_result = await session.execute(delete(IdempotencyKey).where(IdempotencyKey.expires_at <= now))
         await session.commit()
@@ -29,7 +30,7 @@ async def async_main() -> None:
         print(f"  revoked_tokens={result['revoked_tokens']}")
         print(f"  idempotency_keys={result['idempotency_keys']}")
     finally:
-        await engine.dispose()
+        await dispose_engine()
 
 
 def main() -> None:

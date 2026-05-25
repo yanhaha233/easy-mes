@@ -11,6 +11,8 @@ from uuid import uuid4
 
 from app.core.config import settings
 
+# Keep auth crypto on the standard library for the current MVP: PBKDF2-HMAC
+# password hashes and HS256-style signed tokens are implemented here directly.
 PASSWORD_HASH_NAME = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 120_000
 ACCESS_TOKEN_COOKIE_NAME = "easy_mes_access_token"

@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import Actor
 from app.core.defaults import DEFAULT_OPERATOR_CODE, DEFAULT_PLANNER_CODE, DEFAULT_TENANT_ID
 from app.core.security import hash_password
-from app.db.session import AsyncSessionLocal, engine
+from app.db.session import dispose_engine, get_async_sessionmaker
 from app.models.auth import RevokedToken, UserAccount
 from app.models.master_data import (
     Bom,
@@ -337,7 +337,8 @@ async def create_scheduled_work_order(
 
 
 async def seed_work_orders() -> list[str]:
-    async with AsyncSessionLocal() as session:
+    async_session_local = get_async_sessionmaker()
+    async with async_session_local() as session:
         first = await create_scheduled_work_order(
             session,
             external_ref="SEED-MVP-001",
@@ -356,12 +357,27 @@ async def seed_work_orders() -> list[str]:
         return [first, second]
 
 
-async def run(skip_work_orders: bool) -> None:
-    async with AsyncSessionLocal() as session:
+async def reset_default_tenant_data() -> None:
+    async_session_local = get_async_sessionmaker()
+    async with async_session_local() as session:
         async with session.begin():
             await clear_default_tenant(session)
+
+
+async def seed_master_data_only() -> None:
+    async_session_local = get_async_sessionmaker()
+    async with async_session_local() as session:
+        async with session.begin():
             await seed_master_data(session)
 
+
+async def run(*, skip_work_orders: bool, reset_only: bool) -> None:
+    await reset_default_tenant_data()
+    if reset_only:
+        print("Default tenant data has been reset.")
+        return
+
+    await seed_master_data_only()
     work_order_nos: list[str] = []
     if not skip_work_orders:
         work_order_nos = await seed_work_orders()
@@ -384,6 +400,11 @@ async def run(skip_work_orders: bool) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reset and seed a minimal Easy MES MVP dataset.")
     parser.add_argument(
+        "--reset-only",
+        action="store_true",
+        help="Only clear the default tenant dataset, without recreating users, master data, or work orders.",
+    )
+    parser.add_argument(
         "--skip-work-orders",
         "--skip-work-order",
         action="store_true",
@@ -396,9 +417,9 @@ def parse_args() -> argparse.Namespace:
 async def async_main() -> None:
     args = parse_args()
     try:
-        await run(skip_work_orders=args.skip_work_orders)
+        await run(skip_work_orders=args.skip_work_orders, reset_only=args.reset_only)
     finally:
-        await engine.dispose()
+        await dispose_engine()
 
 
 def main() -> None:
