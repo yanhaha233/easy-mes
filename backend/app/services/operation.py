@@ -6,15 +6,24 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, case, false, or_, select
+from sqlalchemy import and_, case, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import Actor
 from app.core.defaults import DEFAULT_OPERATOR_CODE
 from app.models.master_data import Worker
-from app.models.production import ClockRecord, IdempotencyKey, WorkOrder, WorkOrderOperation
+from app.models.production import (
+    ClockBackfillRequest,
+    ClockRecord,
+    IdempotencyKey,
+    WorkOrder,
+    WorkOrderOperation,
+)
 from app.schemas.operation import (
+    OperationBackfillRequestCreate,
+    OperationBackfillRequestRead,
+    OperationBackfillReview,
     OperationClock,
     OperationClockRead,
     OperationRead,
@@ -578,6 +587,13 @@ def validate_clock_payload(payload: OperationClock) -> None:
         business_error(status.HTTP_400_BAD_REQUEST, "DEFECT_QTY_MISMATCH", "不良原因数量合计必须等于不良数")
 
 
+def validate_backfill_time_window(started_at: Any, ended_at: Any) -> int:
+    elapsed_seconds = int((ended_at - started_at).total_seconds())
+    if elapsed_seconds <= 0:
+        business_error(status.HTTP_400_BAD_REQUEST, "INVALID_BACKFILL_TIME", "补录结束时间必须晚于开始时间")
+    return elapsed_seconds
+
+
 def decimal_text(value: Decimal) -> str:
     return format(value, "f")
 
@@ -646,6 +662,462 @@ def build_clock_time_anomaly(
         "server_ended_at": ended_at.isoformat(),
     }
     return elapsed_seconds, True, "quick_report", detail
+
+
+def serialize_backfill_request(row: ClockBackfillRequest) -> dict[str, Any]:
+    elapsed_seconds = validate_backfill_time_window(row.requested_started_at, row.requested_ended_at)
+    return OperationBackfillRequestRead(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        deleted_at=row.deleted_at,
+        work_order_id=row.work_order_id,
+        operation_id=row.operation_id,
+        clock_record_id=row.clock_record_id,
+        work_order_no=row.work_order_no_snapshot,
+        operation_seq=row.operation_seq_snapshot,
+        operation_code=row.operation_code_snapshot,
+        operation_name=row.operation_name_snapshot,
+        work_center_id=row.work_center_id,
+        work_center_code=row.work_center_code_snapshot,
+        work_center_name=row.work_center_name_snapshot,
+        applicant_code=row.applicant_code_snapshot,
+        applicant_name=row.applicant_name_snapshot,
+        operator_code=row.operator_code_snapshot,
+        operator_name=row.operator_name_snapshot,
+        started_at=row.requested_started_at,
+        ended_at=row.requested_ended_at,
+        elapsed_seconds=elapsed_seconds,
+        good_qty=row.good_qty,
+        bad_qty=row.bad_qty,
+        defects=row.defects,
+        material_consumed=row.material_consumed,
+        reason=row.reason,
+        remark=row.remark,
+        status=row.status,
+        reviewed_by=row.reviewed_by,
+        reviewed_at=row.reviewed_at,
+        review_remark=row.review_remark,
+    ).model_dump(mode="json")
+
+
+def backfill_request_hash(operation_id: UUID, payload: OperationBackfillRequestCreate) -> str:
+    return payload_hash({"operation_id": str(operation_id), "payload": payload.model_dump(mode="json")})
+
+
+def backfill_review_hash(request_id: UUID, action: str, payload: OperationBackfillReview) -> str:
+    return payload_hash({"request_id": str(request_id), "action": action, "payload": payload.model_dump(mode="json")})
+
+
+async def create_backfill_request(
+    session: AsyncSession,
+    operation_id: UUID,
+    payload: OperationBackfillRequestCreate,
+    actor: Actor,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    validate_clock_payload(payload)  # type: ignore[arg-type]
+    elapsed_seconds = validate_backfill_time_window(payload.started_at, payload.ended_at)
+    now = utcnow()
+    hashed = backfill_request_hash(operation_id, payload)
+
+    async with session.begin():
+        cached = await session.scalar(
+            select(IdempotencyKey)
+            .where(IdempotencyKey.tenant_id == actor.tenant_id, IdempotencyKey.key == idempotency_key)
+            .with_for_update()
+        )
+        if cached:
+            if cached.request_hash != hashed:
+                business_error(
+                    status.HTTP_409_CONFLICT,
+                    "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                    "同一幂等键重复提交了不同请求体",
+                )
+            return cached.response_body
+
+        operation, work_order = await load_operation_with_order(session, operation_id, actor, lock=True)
+        ensure_actor_can_operate(operation, actor)
+        if operation.status != "ready":
+            business_error(
+                status.HTTP_400_BAD_REQUEST,
+                "INVALID_OPERATION_STATUS",
+                f"当前工序状态为 {operation.status}，只有 ready 工序允许申请补录",
+            )
+        if work_order.status not in {"scheduled", "in_progress", "paused"}:
+            business_error(
+                status.HTTP_400_BAD_REQUEST,
+                "INVALID_WORK_ORDER_STATUS",
+                f"当前工单状态为 {work_order.status}，不能申请补录",
+            )
+
+        operations = sorted(work_order.operations, key=lambda item: item.seq)
+        sync_operation_plan_from_previous_good(operation, operations)
+        validate_clock_quantity_against_plan(operation, payload)  # type: ignore[arg-type]
+        operator_id, operator_code, operator_name = await resolve_operator(
+            session,
+            actor,
+            payload.operator_code,
+        )
+        if operator_id:
+            worker = await load_worker_by_id(session, actor.tenant_id, operator_id)
+            if worker:
+                await ensure_worker_can_run_operations(session, worker, [operation])
+
+        row = ClockBackfillRequest(
+            tenant_id=actor.tenant_id,
+            work_order_id=work_order.id,
+            operation_id=operation.id,
+            work_order_no_snapshot=work_order.work_order_no,
+            operation_seq_snapshot=operation.seq,
+            operation_code_snapshot=operation.operation_code_snapshot,
+            operation_name_snapshot=operation.operation_name_snapshot,
+            work_center_id=operation.work_center_id,
+            work_center_code_snapshot=operation.work_center_code_snapshot,
+            work_center_name_snapshot=operation.work_center_name_snapshot,
+            applicant_id=actor.worker_id,
+            applicant_code_snapshot=actor.worker_code or actor.code,
+            applicant_name_snapshot=actor.worker_name or actor.display_name or actor.code,
+            operator_id=operator_id,
+            operator_code_snapshot=operator_code,
+            operator_name_snapshot=operator_name,
+            requested_started_at=payload.started_at,
+            requested_ended_at=payload.ended_at,
+            good_qty=payload.good_qty,
+            bad_qty=payload.bad_qty,
+            defects=[item.model_dump(mode="json") for item in payload.defects],
+            material_consumed=[item.model_dump(mode="json") for item in payload.actual_materials],
+            reason=payload.reason,
+            remark=payload.remark,
+            status="pending",
+        )
+        session.add(row)
+        await session.flush()
+        await write_audit_log(
+            session,
+            tenant_id=actor.tenant_id,
+            actor_code=row.applicant_code_snapshot,
+            entity_type="operation_backfill_request",
+            entity_id=row.id,
+            action="create",
+            to_state="pending",
+            detail={
+                "work_order_no": work_order.work_order_no,
+                "operation_id": str(operation.id),
+                "operation_seq": operation.seq,
+                "good_qty": str(payload.good_qty),
+                "bad_qty": str(payload.bad_qty),
+                "elapsed_seconds": elapsed_seconds,
+                "reason": payload.reason,
+            },
+        )
+        response = serialize_backfill_request(row)
+        session.add(
+            IdempotencyKey(
+                tenant_id=actor.tenant_id,
+                key=idempotency_key,
+                request_hash=hashed,
+                response_body=response,
+                expires_at=now + timedelta(hours=24),
+            )
+        )
+    return response
+
+
+async def list_backfill_requests(
+    session: AsyncSession,
+    actor: Actor,
+    *,
+    status_filter: str | None,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    filters = [
+        ClockBackfillRequest.tenant_id == actor.tenant_id,
+        ClockBackfillRequest.deleted_at.is_(None),
+    ]
+    if status_filter:
+        filters.append(ClockBackfillRequest.status == status_filter)
+    total = await session.scalar(select(func.count()).select_from(ClockBackfillRequest).where(*filters))
+    rows = list(
+        await session.scalars(
+            select(ClockBackfillRequest)
+            .where(*filters)
+            .order_by(ClockBackfillRequest.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    )
+    return {"total": total or 0, "items": [serialize_backfill_request(row) for row in rows]}
+
+
+async def load_backfill_request(
+    session: AsyncSession,
+    request_id: UUID,
+    actor: Actor,
+    *,
+    lock: bool = False,
+) -> ClockBackfillRequest:
+    stmt = select(ClockBackfillRequest).where(
+        ClockBackfillRequest.id == request_id,
+        ClockBackfillRequest.tenant_id == actor.tenant_id,
+        ClockBackfillRequest.deleted_at.is_(None),
+    )
+    if lock:
+        stmt = stmt.with_for_update()
+    row = await session.scalar(stmt)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="补录申请不存在")
+    return row
+
+
+async def approve_backfill_request(
+    session: AsyncSession,
+    request_id: UUID,
+    payload: OperationBackfillReview,
+    actor: Actor,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    now = utcnow()
+    hashed = backfill_review_hash(request_id, "approve", payload)
+
+    async with session.begin():
+        cached = await session.scalar(
+            select(IdempotencyKey)
+            .where(IdempotencyKey.tenant_id == actor.tenant_id, IdempotencyKey.key == idempotency_key)
+            .with_for_update()
+        )
+        if cached:
+            if cached.request_hash != hashed:
+                business_error(
+                    status.HTTP_409_CONFLICT,
+                    "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                    "同一幂等键重复提交了不同请求体",
+                )
+            return cached.response_body
+
+        row = await load_backfill_request(session, request_id, actor, lock=True)
+        if row.status != "pending":
+            business_error(
+                status.HTTP_400_BAD_REQUEST,
+                "INVALID_BACKFILL_STATUS",
+                f"当前补录申请状态为 {row.status}，不能审核通过",
+            )
+        operation, work_order = await load_operation_with_order(session, row.operation_id, actor, lock=True)
+        if operation.status != "ready":
+            business_error(
+                status.HTTP_400_BAD_REQUEST,
+                "INVALID_OPERATION_STATUS",
+                f"当前工序状态为 {operation.status}，不能审核补录",
+            )
+
+        operations = sorted(work_order.operations, key=lambda item: item.seq)
+        sync_operation_plan_from_previous_good(operation, operations)
+        validate_clock_quantity_against_plan(operation, row)  # type: ignore[arg-type]
+        elapsed_seconds = validate_backfill_time_window(row.requested_started_at, row.requested_ended_at)
+        detail = {
+            "request_id": str(row.id),
+            "request_reason": row.reason,
+            "reviewed_by": actor.code,
+            "review_remark": payload.review_remark,
+            "elapsed_seconds": elapsed_seconds,
+            "server_approved_at": now.isoformat(),
+        }
+        clock_record = ClockRecord(
+            tenant_id=actor.tenant_id,
+            work_order_id=work_order.id,
+            operation_id=operation.id,
+            work_order_no_snapshot=work_order.work_order_no,
+            operation_seq_snapshot=operation.seq,
+            operation_code_snapshot=operation.operation_code_snapshot,
+            operation_name_snapshot=operation.operation_name_snapshot,
+            work_center_id=operation.work_center_id,
+            work_center_code_snapshot=operation.work_center_code_snapshot,
+            work_center_name_snapshot=operation.work_center_name_snapshot,
+            operator_id=row.operator_id,
+            operator_code_snapshot=row.operator_code_snapshot,
+            operator_name_snapshot=row.operator_name_snapshot,
+            started_at=row.requested_started_at,
+            ended_at=row.requested_ended_at,
+            elapsed_seconds=elapsed_seconds,
+            time_anomaly=True,
+            time_anomaly_reason="backfill_approved",
+            time_anomaly_detail=detail,
+            good_qty=row.good_qty,
+            bad_qty=row.bad_qty,
+            defects=row.defects,
+            material_consumed=row.material_consumed,
+            remark=row.remark or row.reason,
+        )
+        session.add(clock_record)
+        operation.started_at = row.requested_started_at
+        operation.started_by_operator_id = row.operator_id
+        operation.started_by_operator_code = row.operator_code_snapshot
+        operation.started_by_operator_name = row.operator_name_snapshot
+        operation.good_qty += row.good_qty
+        operation.bad_qty += row.bad_qty
+        operation.status = "done"
+
+        next_operation = next(
+            (item for item in operations if item.seq > operation.seq and item.status == "pending"),
+            None,
+        )
+        old_order_status = work_order.status
+        if next_operation:
+            pass_good_qty_to_next_operation(operation, next_operation)
+            next_operation.status = "ready"
+            work_order.status = "in_progress"
+        elif all(item.status == "done" for item in operations):
+            work_order.status = "completed"
+        else:
+            work_order.status = "in_progress"
+        sync_work_order_actual_qty(work_order, operations)
+
+        row.status = "approved"
+        row.reviewed_by = actor.code
+        row.reviewed_at = now
+        row.review_remark = payload.review_remark
+        await session.flush()
+        row.clock_record_id = clock_record.id
+        await write_audit_log(
+            session,
+            tenant_id=actor.tenant_id,
+            actor_code=actor.code,
+            entity_type="operation_backfill_request",
+            entity_id=row.id,
+            action="approve",
+            from_state="pending",
+            to_state="approved",
+            detail=detail,
+        )
+        await write_audit_log(
+            session,
+            tenant_id=actor.tenant_id,
+            actor_code=row.operator_code_snapshot,
+            entity_type="operation",
+            entity_id=operation.id,
+            action="clock",
+            from_state="ready",
+            to_state="done",
+            detail={
+                "work_order_no": work_order.work_order_no,
+                "operation_seq": operation.seq,
+                "good_qty": str(row.good_qty),
+                "bad_qty": str(row.bad_qty),
+                "backfill_request_id": str(row.id),
+                "elapsed_seconds": elapsed_seconds,
+                "time_anomaly": True,
+                "time_anomaly_reason": "backfill_approved",
+            },
+        )
+        if next_operation:
+            await write_audit_log(
+                session,
+                tenant_id=actor.tenant_id,
+                actor_code=actor.code,
+                entity_type="operation",
+                entity_id=next_operation.id,
+                action="ready",
+                from_state="pending",
+                to_state="ready",
+                detail={
+                    "work_order_no": work_order.work_order_no,
+                    "operation_seq": next_operation.seq,
+                    "source_operation_id": str(operation.id),
+                },
+            )
+        if old_order_status != work_order.status:
+            await write_audit_log(
+                session,
+                tenant_id=actor.tenant_id,
+                actor_code=actor.code,
+                entity_type="work_order",
+                entity_id=work_order.id,
+                action="backfill_clock",
+                from_state=old_order_status,
+                to_state=work_order.status,
+                detail={
+                    "operation_id": str(operation.id),
+                    "operation_seq": operation.seq,
+                    "backfill_request_id": str(row.id),
+                },
+            )
+        await session.flush()
+        await session.refresh(row, attribute_names=["updated_at"])
+        response = serialize_backfill_request(row)
+        session.add(
+            IdempotencyKey(
+                tenant_id=actor.tenant_id,
+                key=idempotency_key,
+                request_hash=hashed,
+                response_body=response,
+                expires_at=now + timedelta(hours=24),
+            )
+        )
+    return response
+
+
+async def reject_backfill_request(
+    session: AsyncSession,
+    request_id: UUID,
+    payload: OperationBackfillReview,
+    actor: Actor,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    now = utcnow()
+    hashed = backfill_review_hash(request_id, "reject", payload)
+
+    async with session.begin():
+        cached = await session.scalar(
+            select(IdempotencyKey)
+            .where(IdempotencyKey.tenant_id == actor.tenant_id, IdempotencyKey.key == idempotency_key)
+            .with_for_update()
+        )
+        if cached:
+            if cached.request_hash != hashed:
+                business_error(
+                    status.HTTP_409_CONFLICT,
+                    "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                    "同一幂等键重复提交了不同请求体",
+                )
+            return cached.response_body
+
+        row = await load_backfill_request(session, request_id, actor, lock=True)
+        if row.status != "pending":
+            business_error(
+                status.HTTP_400_BAD_REQUEST,
+                "INVALID_BACKFILL_STATUS",
+                f"当前补录申请状态为 {row.status}，不能驳回",
+            )
+        row.status = "rejected"
+        row.reviewed_by = actor.code
+        row.reviewed_at = now
+        row.review_remark = payload.review_remark
+        await write_audit_log(
+            session,
+            tenant_id=actor.tenant_id,
+            actor_code=actor.code,
+            entity_type="operation_backfill_request",
+            entity_id=row.id,
+            action="reject",
+            from_state="pending",
+            to_state="rejected",
+            detail={"review_remark": payload.review_remark},
+        )
+        await session.flush()
+        await session.refresh(row, attribute_names=["updated_at"])
+        response = serialize_backfill_request(row)
+        session.add(
+            IdempotencyKey(
+                tenant_id=actor.tenant_id,
+                key=idempotency_key,
+                request_hash=hashed,
+                response_body=response,
+                expires_at=now + timedelta(hours=24),
+            )
+        )
+    return response
 
 
 async def clock_operation(

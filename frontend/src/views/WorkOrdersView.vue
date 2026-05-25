@@ -112,6 +112,62 @@
       />
     </section>
 
+    <section class="sheet">
+      <div class="section-header">
+        <div>
+          <p class="eyebrow">异常补录</p>
+          <h2>待审核申请</h2>
+        </div>
+        <el-button :icon="Refresh" :loading="backfillLoading" @click="loadPendingBackfills">刷新</el-button>
+      </div>
+      <el-table v-loading="backfillLoading" :data="pendingBackfills" class="desktop-table">
+        <el-table-column prop="work_order_no" label="工单号" min-width="150" />
+        <el-table-column label="工序" min-width="170">
+          <template #default="{ row }">{{ row.operation_seq }} {{ row.operation_name }}</template>
+        </el-table-column>
+        <el-table-column label="操作员" min-width="130">
+          <template #default="{ row }">{{ row.operator_name }} / {{ row.operator_code }}</template>
+        </el-table-column>
+        <el-table-column label="数量" width="140">
+          <template #default="{ row }">合格 {{ row.good_qty }} / 不良 {{ row.bad_qty }}</template>
+        </el-table-column>
+        <el-table-column label="时间" min-width="210">
+          <template #default="{ row }">{{ formatTime(row.started_at) }} - {{ formatTime(row.ended_at) }}</template>
+        </el-table-column>
+        <el-table-column prop="reason" label="原因" min-width="160" />
+        <el-table-column label="操作" width="150" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="reviewBackfill(row, 'approve')">通过</el-button>
+            <el-button link type="danger" @click="reviewBackfill(row, 'reject')">驳回</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-loading="backfillLoading" class="mobile-records">
+        <article v-for="row in pendingBackfills" :key="row.id" class="record-row">
+          <div class="record-main">
+            <div>
+              <strong>{{ row.work_order_no }}</strong>
+              <span>{{ row.operation_seq }} {{ row.operation_name }}</span>
+            </div>
+            <el-tag type="warning" effect="plain">待审核</el-tag>
+          </div>
+          <dl>
+            <dt>操作员</dt>
+            <dd>{{ row.operator_name }}</dd>
+            <dt>数量</dt>
+            <dd>合格 {{ row.good_qty }} / 不良 {{ row.bad_qty }}</dd>
+            <dt>原因</dt>
+            <dd>{{ row.reason }}</dd>
+          </dl>
+          <div class="record-actions">
+            <el-button type="primary" @click="reviewBackfill(row, 'approve')">通过</el-button>
+            <el-button type="danger" plain @click="reviewBackfill(row, 'reject')">驳回</el-button>
+          </div>
+        </article>
+      </div>
+      <el-empty v-if="!backfillLoading && pendingBackfills.length === 0" description="暂无待审核补录" />
+    </section>
+
     <el-drawer v-model="createDrawerOpen" title="新建工单" size="560px" destroy-on-close>
       <el-form label-position="top" :model="form" @submit.prevent>
         <el-form-item label="生产物料" required>
@@ -300,6 +356,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search, View } from '@element-plus/icons-vue'
 import { ApiError } from '../api/client'
 import { getWorkerOperationSkills, listMaster } from '../api/masterData'
+import { approveBackfillRequest, listBackfillRequests, rejectBackfillRequest } from '../api/operations'
 import {
   cancelWorkOrder,
   confirmWorkOrder,
@@ -311,6 +368,7 @@ import {
   scheduleWorkOrder,
 } from '../api/workOrders'
 import type { Material, Worker } from '../types/masterData'
+import type { OperationBackfillRequestRead } from '../types/operation'
 import type {
   Priority,
   TraceTimelineEvent,
@@ -334,10 +392,12 @@ const scheduleDialogOpen = ref(false)
 const detailDrawerOpen = ref(false)
 const saving = ref(false)
 const traceLoading = ref(false)
+const backfillLoading = ref(false)
 const detail = ref<WorkOrder | null>(null)
 const trace = ref<WorkOrderTraceability | null>(null)
 const materials = ref<Material[]>([])
 const workers = ref<Worker[]>([])
+const pendingBackfills = ref<OperationBackfillRequestRead[]>([])
 const scheduleTarget = ref<WorkOrderListItem | null>(null)
 const scheduleDetail = ref<WorkOrder | null>(null)
 const workerSkillCodes = ref<Record<string, string[]>>({})
@@ -385,7 +445,7 @@ const operatorOptions = computed(() =>
 
 onMounted(async () => {
   syncFiltersFromRoute()
-  await Promise.all([loadMaterials(), loadWorkers(), loadOrders()])
+  await Promise.all([loadMaterials(), loadWorkers(), loadOrders(), loadPendingBackfills()])
 })
 
 watch(
@@ -453,6 +513,18 @@ async function loadOrders() {
     showError(error)
   } finally {
     state.loading = false
+  }
+}
+
+async function loadPendingBackfills() {
+  backfillLoading.value = true
+  try {
+    const page = await listBackfillRequests({ status: 'pending', limit: 50, offset: 0 })
+    pendingBackfills.value = page.items
+  } catch (error) {
+    showError(error)
+  } finally {
+    backfillLoading.value = false
   }
 }
 
@@ -586,6 +658,39 @@ async function submitSchedule() {
     showError(error)
   } finally {
     saving.value = false
+  }
+}
+
+async function reviewBackfill(row: OperationBackfillRequestRead, action: 'approve' | 'reject') {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      action === 'approve' ? '请输入通过备注' : '请输入驳回原因',
+      `${action === 'approve' ? '通过' : '驳回'} ${row.work_order_no} ${row.operation_seq}`,
+      {
+        confirmButtonText: action === 'approve' ? '确认通过' : '确认驳回',
+        cancelButtonText: '取消',
+        inputValue: action === 'approve' ? '核对现场记录后通过' : '',
+        inputPattern: action === 'approve' ? undefined : /\S+/,
+        inputErrorMessage: '驳回原因不能为空',
+      },
+    )
+    if (action === 'approve') {
+      await approveBackfillRequest(row.id, { review_remark: value?.trim() || null })
+      ElMessage.success('补录申请已通过')
+    } else {
+      await rejectBackfillRequest(row.id, { review_remark: value.trim() })
+      ElMessage.success('补录申请已驳回')
+    }
+    await Promise.all([loadPendingBackfills(), loadOrders()])
+    if (detail.value?.work_order_no === row.work_order_no) {
+      detail.value = await getWorkOrder(row.work_order_id)
+      await loadTrace(row.work_order_no)
+    }
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') {
+      return
+    }
+    showError(error)
   }
 }
 

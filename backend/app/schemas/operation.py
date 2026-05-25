@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -38,6 +38,55 @@ class OperationClock(BaseModel):
     operator_code: str | None = Field(default=None, max_length=64)
     client_timestamp: datetime | None = None
     remark: str | None = None
+
+
+BackfillStatus = Literal["pending", "approved", "rejected"]
+
+
+class OperationBackfillRequestCreate(BaseModel):
+    started_at: datetime
+    ended_at: datetime
+    good_qty: Decimal = Field(ge=0, max_digits=18, decimal_places=6)
+    bad_qty: Decimal = Field(ge=0, max_digits=18, decimal_places=6)
+    defects: list[DefectInput] = Field(default_factory=list)
+    actual_materials: list[ActualMaterialInput] = Field(default_factory=list)
+    operator_code: str | None = Field(default=None, max_length=64)
+    reason: str = Field(min_length=1, max_length=255)
+    remark: str | None = None
+
+
+class OperationBackfillReview(BaseModel):
+    review_remark: str | None = Field(default=None, max_length=512)
+
+
+class OperationBackfillRequestRead(EntityRead):
+    work_order_id: UUID
+    operation_id: UUID
+    clock_record_id: UUID | None = None
+    work_order_no: str
+    operation_seq: int
+    operation_code: str
+    operation_name: str
+    work_center_id: UUID
+    work_center_code: str
+    work_center_name: str
+    applicant_code: str
+    applicant_name: str
+    operator_code: str
+    operator_name: str
+    started_at: datetime
+    ended_at: datetime
+    elapsed_seconds: int
+    good_qty: Decimal
+    bad_qty: Decimal
+    defects: list
+    material_consumed: list
+    reason: str
+    remark: str | None = None
+    status: BackfillStatus
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    review_remark: str | None = None
 
 
 class OperationRead(EntityRead):

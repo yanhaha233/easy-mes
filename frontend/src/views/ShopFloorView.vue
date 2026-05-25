@@ -83,6 +83,14 @@
         >
           开工
         </el-button>
+        <el-button
+          v-if="operation.status === 'ready'"
+          size="large"
+          :loading="saving"
+          @click="openBackfillDialog"
+        >
+          补录申请
+        </el-button>
         <template v-else-if="operation.status === 'in_progress'">
           <div class="qty-grid">
             <el-form-item label="合格数">
@@ -120,6 +128,50 @@
     <section v-else class="empty-workbench">
       <el-empty description="等待扫码或输入工单号" />
     </section>
+
+    <el-dialog v-model="backfillDialogOpen" title="异常补录申请" width="520px">
+      <el-form label-position="top" :model="backfillForm" @submit.prevent>
+        <div class="qty-grid">
+          <el-form-item label="开始时间" required>
+            <el-date-picker
+              v-model="backfillForm.started_at"
+              type="datetime"
+              value-format="YYYY-MM-DDTHH:mm:ssZ"
+              placeholder="选择开始时间"
+            />
+          </el-form-item>
+          <el-form-item label="结束时间" required>
+            <el-date-picker
+              v-model="backfillForm.ended_at"
+              type="datetime"
+              value-format="YYYY-MM-DDTHH:mm:ssZ"
+              placeholder="选择结束时间"
+            />
+          </el-form-item>
+          <el-form-item label="合格数" required>
+            <el-input v-model="backfillForm.good_qty" inputmode="decimal" />
+          </el-form-item>
+          <el-form-item label="不良数" required>
+            <el-input v-model="backfillForm.bad_qty" inputmode="decimal" />
+          </el-form-item>
+        </div>
+        <el-form-item v-if="Number(backfillForm.bad_qty) > 0" label="不良原因">
+          <el-select v-model="backfillForm.defect_reason_code" placeholder="选择原因">
+            <el-option v-for="item in defectReasonOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="补录原因" required>
+          <el-input v-model="backfillForm.reason" :rows="2" type="textarea" placeholder="例如现场先生产后补录" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="backfillForm.remark" :rows="2" type="textarea" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="backfillDialogOpen = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="handleBackfillRequest">提交申请</el-button>
+      </template>
+    </el-dialog>
   </main>
 </template>
 
@@ -130,6 +182,7 @@ import { ElMessage } from 'element-plus'
 import { ApiError } from '../api/client'
 import {
   clockOperation,
+  createBackfillRequest,
   getOperationByQr,
   listOperationWorkbench,
   pauseOperation,
@@ -148,6 +201,7 @@ const authStore = useAuthStore()
 const loading = ref(false)
 const saving = ref(false)
 const workbenchLoading = ref(false)
+const backfillDialogOpen = ref(false)
 const operation = ref<OperationRead | null>(null)
 const workbenchOperations = ref<OperationRead[]>([])
 const defectReasons = ref<DefectReason[]>([])
@@ -156,6 +210,16 @@ const clockForm = reactive({
   good_qty: '1',
   bad_qty: '0',
   defect_reason_code: '',
+  remark: '',
+})
+
+const backfillForm = reactive({
+  started_at: '',
+  ended_at: '',
+  good_qty: '1',
+  bad_qty: '0',
+  defect_reason_code: '',
+  reason: '',
   remark: '',
 })
 
@@ -210,6 +274,21 @@ function resetClockForm(nextOperation: OperationRead) {
   clockForm.remark = ''
 }
 
+function toIsoInput(value: Date) {
+  const offsetMinutes = -value.getTimezoneOffset()
+  const sign = offsetMinutes >= 0 ? '+' : '-'
+  const absOffset = Math.abs(offsetMinutes)
+  const offsetHours = String(Math.floor(absOffset / 60)).padStart(2, '0')
+  const offsetRemainder = String(absOffset % 60).padStart(2, '0')
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  const hour = String(value.getHours()).padStart(2, '0')
+  const minute = String(value.getMinutes()).padStart(2, '0')
+  const second = String(value.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}${sign}${offsetHours}:${offsetRemainder}`
+}
+
 function selectWorkbenchOperation(item: OperationRead) {
   operation.value = item
   qrCode.value = item.work_order_no
@@ -246,6 +325,23 @@ async function handleStart() {
   } finally {
     saving.value = false
   }
+}
+
+function openBackfillDialog() {
+  if (!operation.value) {
+    return
+  }
+  const endedAt = new Date()
+  const startedAt = new Date(endedAt.getTime() - 30 * 60 * 1000)
+  const remain = Number(operation.value.planned_qty) - Number(operation.value.good_qty) - Number(operation.value.bad_qty)
+  backfillForm.started_at = toIsoInput(startedAt)
+  backfillForm.ended_at = toIsoInput(endedAt)
+  backfillForm.good_qty = String(Math.max(remain, 1))
+  backfillForm.bad_qty = '0'
+  backfillForm.defect_reason_code = ''
+  backfillForm.reason = ''
+  backfillForm.remark = ''
+  backfillDialogOpen.value = true
 }
 
 async function handlePause() {
@@ -292,6 +388,59 @@ function validateClock() {
     return false
   }
   return true
+}
+
+function validateBackfill() {
+  if (!backfillForm.started_at || !backfillForm.ended_at) {
+    ElMessage.warning('请选择补录开始和结束时间')
+    return false
+  }
+  if (new Date(backfillForm.ended_at).getTime() <= new Date(backfillForm.started_at).getTime()) {
+    ElMessage.warning('结束时间必须晚于开始时间')
+    return false
+  }
+  const goodQty = Number(backfillForm.good_qty)
+  const badQty = Number(backfillForm.bad_qty)
+  if (!Number.isFinite(goodQty) || !Number.isFinite(badQty) || goodQty + badQty <= 0) {
+    ElMessage.warning('合格数和不良数合计必须大于 0')
+    return false
+  }
+  if (badQty > 0 && !backfillForm.defect_reason_code) {
+    ElMessage.warning('有不良数时必须选择不良原因')
+    return false
+  }
+  if (!backfillForm.reason.trim()) {
+    ElMessage.warning('请输入补录原因')
+    return false
+  }
+  return true
+}
+
+async function handleBackfillRequest() {
+  if (!operation.value || !validateBackfill()) {
+    return
+  }
+  saving.value = true
+  try {
+    const badQty = Number(backfillForm.bad_qty)
+    await createBackfillRequest(operation.value.id, {
+      started_at: backfillForm.started_at,
+      ended_at: backfillForm.ended_at,
+      good_qty: backfillForm.good_qty,
+      bad_qty: backfillForm.bad_qty,
+      defects: badQty > 0 ? [{ reason_code: backfillForm.defect_reason_code, qty: backfillForm.bad_qty }] : [],
+      actual_materials: [],
+      reason: backfillForm.reason.trim(),
+      remark: backfillForm.remark.trim() || null,
+    })
+    backfillDialogOpen.value = false
+    await loadWorkbench()
+    ElMessage.success('补录申请已提交，等待计划员审核')
+  } catch (error) {
+    showError(error)
+  } finally {
+    saving.value = false
+  }
 }
 
 async function handleClock() {

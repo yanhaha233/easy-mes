@@ -1,4 +1,5 @@
 import { apiRequest } from './client'
+import { withIdempotencyKey } from './idempotency'
 import type { Page } from '../types/masterData'
 import type {
   ProductionReceiptCreatePayload,
@@ -27,13 +28,15 @@ export async function getWorkOrder(id: string) {
 }
 
 export async function createWorkOrder(payload: WorkOrderCreatePayload) {
-  return apiRequest<WorkOrder>('/work-orders', {
-    method: 'POST',
-    headers: {
-      'Idempotency-Key': crypto.randomUUID(),
-    },
-    body: JSON.stringify(payload),
-  })
+  return withIdempotencyKey('work-order:create', (idempotencyKey) =>
+    apiRequest<WorkOrder>('/work-orders', {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify(payload),
+    }),
+  )
 }
 
 export async function confirmWorkOrder(workOrderNo: string) {
@@ -41,13 +44,15 @@ export async function confirmWorkOrder(workOrderNo: string) {
 }
 
 export async function cancelWorkOrder(workOrderNo: string, reason: string) {
-  return apiRequest<WorkOrder>(`/work-orders/${workOrderNo}/cancel`, {
-    method: 'POST',
-    headers: {
-      'Idempotency-Key': crypto.randomUUID(),
-    },
-    body: JSON.stringify({ reason }),
-  })
+  return withIdempotencyKey(`work-order:${workOrderNo}:cancel`, (idempotencyKey) =>
+    apiRequest<WorkOrder>(`/work-orders/${workOrderNo}/cancel`, {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify({ reason }),
+    }),
+  )
 }
 
 export async function scheduleWorkOrder(workOrderNo: string, payload: WorkOrderSchedulePayload) {
@@ -58,13 +63,15 @@ export async function scheduleWorkOrder(workOrderNo: string, payload: WorkOrderS
 }
 
 export async function receiveWorkOrder(workOrderNo: string, payload: ProductionReceiptCreatePayload) {
-  return apiRequest<WorkOrderReceiptResponse>(`/work-orders/${workOrderNo}/receipt`, {
-    method: 'POST',
-    headers: {
-      'Idempotency-Key': crypto.randomUUID(),
-    },
-    body: JSON.stringify(payload),
-  })
+  return withIdempotencyKey(`work-order:${workOrderNo}:receipt`, (idempotencyKey) =>
+    apiRequest<WorkOrderReceiptResponse>(`/work-orders/${workOrderNo}/receipt`, {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify(payload),
+    }),
+  )
 }
 
 export async function getWorkOrderTraceability(workOrderNo: string) {

@@ -147,6 +147,43 @@ class ClockRecord(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class ClockBackfillRequest(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
+    __tablename__ = "clock_backfill_requests"
+    __table_args__ = (
+        Index("ix_clock_backfill_requests_tenant_status", "tenant_id", "status", "created_at"),
+        Index("ix_clock_backfill_requests_tenant_operation", "tenant_id", "operation_id", "created_at"),
+    )
+
+    work_order_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("work_orders.id"))
+    operation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("work_order_operations.id"))
+    clock_record_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("clock_records.id"))
+    work_order_no_snapshot: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation_seq_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
+    operation_code_snapshot: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation_name_snapshot: Mapped[str] = mapped_column(String(128), nullable=False)
+    work_center_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    work_center_code_snapshot: Mapped[str] = mapped_column(String(64), nullable=False)
+    work_center_name_snapshot: Mapped[str] = mapped_column(String(128), nullable=False)
+    applicant_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    applicant_code_snapshot: Mapped[str] = mapped_column(String(64), nullable=False)
+    applicant_name_snapshot: Mapped[str] = mapped_column(String(128), nullable=False)
+    operator_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    operator_code_snapshot: Mapped[str] = mapped_column(String(64), nullable=False)
+    operator_name_snapshot: Mapped[str] = mapped_column(String(128), nullable=False)
+    requested_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    requested_ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    good_qty: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    bad_qty: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    defects: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    material_consumed: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    reason: Mapped[str] = mapped_column(String(255), nullable=False)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ProductionReceipt(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
     __tablename__ = "production_receipts"
     __table_args__ = (UniqueConstraint("tenant_id", "receipt_no", name="uq_production_receipts_tenant_no"),)

@@ -266,6 +266,88 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
     list_item = next(item for item in list_response.json()["items"] if item["work_order_no"] == work_order_no)
     assert list_item["assigned_operator_codes"] == ["default_operator"]
 
+    backfill_order = post_json(
+        client,
+        "/api/v1/work-orders",
+        {
+            "material_code": product["code"],
+            "quantity": "4",
+            "due_date": "2026-06-02",
+            "priority": "normal",
+            "source": "manual",
+            "external_ref": f"SO-BACKFILL-{suffix}",
+            "customer_name": "补录客户",
+        },
+        token=planner_token,
+        key=idempotency_key("create-backfill-wo", suffix),
+    )
+    backfill_no = backfill_order["work_order_no"]
+    post_json(client, f"/api/v1/work-orders/{backfill_no}/confirm", {}, token=planner_token)
+    backfill_scheduled = post_json(client, f"/api/v1/work-orders/{backfill_no}/schedule", {}, token=planner_token)
+    backfill_operation_id = backfill_scheduled["operations"][0]["id"]
+    backfill_request = post_json(
+        client,
+        f"/api/v1/operations/{backfill_operation_id}/backfill-requests",
+        {
+            "started_at": "2026-05-25T01:00:00Z",
+            "ended_at": "2026-05-25T01:20:00Z",
+            "good_qty": "4",
+            "bad_qty": "0",
+            "defects": [],
+            "actual_materials": [{"material_code": steel["code"], "qty": "4", "lot_no": f"BF-{suffix}"}],
+            "reason": "现场先生产后补录",
+        },
+        token=operator_token,
+        key=idempotency_key("request-backfill-op-10", suffix),
+    )
+    assert backfill_request["status"] == "pending"
+    assert backfill_request["clock_record_id"] is None
+    detail_before_approval = client.get(
+        f"/api/v1/work-orders/{backfill_order['id']}",
+        headers=auth_headers(planner_token),
+    )
+    assert detail_before_approval.status_code == 200, detail_before_approval.text
+    assert detail_before_approval.json()["operations"][0]["status"] == "ready"
+
+    pending_backfills = client.get(
+        "/api/v1/operation-backfill-requests?status=pending",
+        headers=auth_headers(planner_token),
+    )
+    assert pending_backfills.status_code == 200, pending_backfills.text
+    assert any(item["id"] == backfill_request["id"] for item in pending_backfills.json()["items"])
+    operator_approval = client.post(
+        f"/api/v1/operation-backfill-requests/{backfill_request['id']}/approve",
+        json={"review_remark": "操作员不能自审"},
+        headers=auth_headers(operator_token, idempotency_key("operator-approve-backfill", suffix)),
+    )
+    assert operator_approval.status_code == 403, operator_approval.text
+    approved_backfill = post_json(
+        client,
+        f"/api/v1/operation-backfill-requests/{backfill_request['id']}/approve",
+        {"review_remark": "核对纸质流转卡后通过"},
+        token=planner_token,
+        key=idempotency_key("approve-backfill-op-10", suffix),
+    )
+    assert approved_backfill["status"] == "approved"
+    assert approved_backfill["clock_record_id"] is not None
+    detail_after_approval = client.get(
+        f"/api/v1/work-orders/{backfill_order['id']}",
+        headers=auth_headers(planner_token),
+    )
+    assert detail_after_approval.status_code == 200, detail_after_approval.text
+    assert detail_after_approval.json()["status"] == "in_progress"
+    assert detail_after_approval.json()["operations"][0]["status"] == "done"
+    assert detail_after_approval.json()["operations"][1]["status"] == "ready"
+    backfill_trace_response = client.get(
+        f"/api/v1/work-orders/{backfill_no}/traceability",
+        headers=auth_headers(planner_token),
+    )
+    assert backfill_trace_response.status_code == 200, backfill_trace_response.text
+    backfill_trace = backfill_trace_response.json()
+    assert len(backfill_trace["clock_records"]) == 1
+    assert backfill_trace["clock_records"][0]["time_anomaly_reason"] == "backfill_approved"
+    assert any(event["event_type"] == "clock" for event in backfill_trace["timeline"])
+
     operation_id = scheduled["operations"][0]["id"]
     workbench_response = client.get("/api/v1/operations/workbench", headers=auth_headers(operator_token))
     assert workbench_response.status_code == 200, workbench_response.text

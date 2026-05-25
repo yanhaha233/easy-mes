@@ -14,6 +14,7 @@ from app.models.master_data import (
 )
 from app.models.production import (
     AuditLog,
+    ClockBackfillRequest,
     ClockRecord,
     DocumentSequence,
     IdempotencyKey,
@@ -27,6 +28,7 @@ __all__ = [
     "Base",
     "Bom",
     "BomLine",
+    "ClockBackfillRequest",
     "ClockRecord",
     "DefectReason",
     "DocumentSequence",
