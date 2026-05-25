@@ -476,6 +476,13 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
     assert first_clock["elapsed_seconds"] >= 0
     assert first_clock["time_anomaly"] is True
     assert first_clock["time_anomaly_reason"] == "quick_report"
+    in_progress_detail = client.get(
+        f"/api/v1/work-orders/{work_order['id']}",
+        headers=auth_headers(planner_token),
+    )
+    assert in_progress_detail.status_code == 200, in_progress_detail.text
+    assert in_progress_detail.json()["actual_good_qty"] == "3.000000"
+    assert in_progress_detail.json()["actual_bad_qty"] == "2.000000"
 
     next_operation_id = first_clock["next_operation_id"]
     second_start = post_json(

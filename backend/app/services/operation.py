@@ -635,10 +635,9 @@ def sync_operation_plan_from_previous_good(
 
 
 def sync_work_order_actual_qty(work_order: WorkOrder, operations: list[WorkOrderOperation]) -> None:
-    last_operation = operations[-1] if operations else None
-    work_order.actual_good_qty = (
-        last_operation.good_qty if last_operation and last_operation.status == "done" else Decimal("0")
-    )
+    completed_operations = [item for item in operations if item.status == "done"]
+    latest_completed_operation = max(completed_operations, key=lambda item: item.seq) if completed_operations else None
+    work_order.actual_good_qty = latest_completed_operation.good_qty if latest_completed_operation else Decimal("0")
     work_order.actual_bad_qty = sum((item.bad_qty for item in operations), Decimal("0"))
 
 
