@@ -1,4 +1,5 @@
 const API_BASE = '/api/v1'
+export const AUTH_TOKEN_STORAGE_KEY = 'easy_mes_access_token'
 
 export class ApiError extends Error {
   status: number
@@ -41,6 +42,23 @@ async function readError(response: Response) {
   }
 }
 
+function authToken() {
+  const token = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)
+  return token ? `Bearer ${token}` : null
+}
+
+function buildHeaders(body: BodyInit | null | undefined, headers?: HeadersInit) {
+  const merged = new Headers(headers)
+  const token = authToken()
+  if (token && !merged.has('Authorization')) {
+    merged.set('Authorization', token)
+  }
+  if (body && !merged.has('Content-Type')) {
+    merged.set('Content-Type', 'application/json')
+  }
+  return merged
+}
+
 export async function apiRequest<T>(
   path: string,
   options: RequestInit & { query?: Record<string, QueryValue> } = {},
@@ -48,10 +66,7 @@ export async function apiRequest<T>(
   const { query, headers, body, ...rest } = options
   const response = await fetch(`${API_BASE}${path}${buildQuery(query)}`, {
     ...rest,
-    headers: {
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-      ...headers,
-    },
+    headers: buildHeaders(body, headers),
     body,
   })
 

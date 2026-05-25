@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import Actor, get_default_actor
+from app.api.deps import Actor, get_any_authenticated_actor
 from app.db.session import get_db_session
 from app.models.production import WorkOrder, WorkOrderOperation
 from app.schemas.dashboard import WorkOrderDashboardRead
@@ -16,7 +16,7 @@ router = APIRouter(tags=["dashboard"])
 @router.get("/dashboard/work-orders", response_model=WorkOrderDashboardRead)
 async def get_work_order_dashboard(
     db: AsyncSession = Depends(get_db_session),
-    actor: Actor = Depends(get_default_actor),
+    actor: Actor = Depends(get_any_authenticated_actor),
 ) -> dict[str, Any]:
     status_rows = await db.execute(
         select(WorkOrder.status, func.count())

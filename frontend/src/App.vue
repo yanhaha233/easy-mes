@@ -1,26 +1,31 @@
 <template>
   <div class="app-shell">
-    <header class="app-header">
+    <header v-if="!isLoginRoute" class="app-header">
       <RouterLink class="brand" to="/">
         <span class="brand__mark">EM</span>
         <span>
           <strong>Easy MES</strong>
-          <small>默认计划员 / 操作员</small>
+          <small>{{ userLabel }}</small>
         </span>
       </RouterLink>
 
       <nav class="top-nav" aria-label="主导航">
-        <RouterLink v-for="item in navItems" :key="item.to" :to="item.to">
+        <RouterLink v-for="item in visibleNavItems" :key="item.to" :to="item.to">
           <el-icon><component :is="item.icon" /></el-icon>
           <span>{{ item.label }}</span>
         </RouterLink>
       </nav>
+
+      <button class="user-chip" type="button" @click="logout">
+        <el-icon><SwitchButton /></el-icon>
+        <span>退出</span>
+      </button>
     </header>
 
     <RouterView />
 
-    <nav class="bottom-nav" aria-label="移动端主导航">
-      <RouterLink v-for="item in navItems" :key="item.to" :to="item.to">
+    <nav v-if="!isLoginRoute" class="bottom-nav" aria-label="移动端主导航">
+      <RouterLink v-for="item in visibleNavItems" :key="item.to" :to="item.to">
         <el-icon><component :is="item.icon" /></el-icon>
         <span>{{ item.label }}</span>
       </RouterLink>
@@ -29,13 +34,54 @@
 </template>
 
 <script setup lang="ts">
-import { DataBoard, Files, Stopwatch, Tickets, Warning } from '@element-plus/icons-vue'
+import { computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { DataBoard, Files, Stopwatch, SwitchButton, Tickets, Warning } from '@element-plus/icons-vue'
 
-const navItems = [
+import { useAuthStore } from './stores/auth'
+import type { UserRole } from './types/auth'
+
+type NavItem = {
+  to: string
+  label: string
+  icon: unknown
+  roles?: UserRole[]
+}
+
+const route = useRoute()
+const router = useRouter()
+const authStore = useAuthStore()
+
+const roleLabels: Record<UserRole, string> = {
+  planner: '计划员',
+  operator: '操作员',
+  inspector: '质检员',
+  admin: '管理员',
+}
+
+const navItems: NavItem[] = [
   { to: '/', label: '总览', icon: DataBoard },
-  { to: '/work-orders', label: '工单', icon: Tickets },
-  { to: '/shop-floor', label: '报工', icon: Stopwatch },
-  { to: '/quality', label: '质量', icon: Warning },
-  { to: '/master-data', label: '档案', icon: Files },
+  { to: '/work-orders', label: '工单', icon: Tickets, roles: ['planner', 'admin'] },
+  { to: '/shop-floor', label: '报工', icon: Stopwatch, roles: ['operator', 'admin'] },
+  { to: '/quality', label: '质量', icon: Warning, roles: ['inspector', 'admin'] },
+  { to: '/master-data', label: '档案', icon: Files, roles: ['planner', 'admin'] },
 ]
+
+const isLoginRoute = computed(() => route.name === 'login')
+const visibleNavItems = computed(() => {
+  const role = authStore.user?.role
+  return navItems.filter((item) => !item.roles?.length || (role && item.roles.includes(role)))
+})
+const userLabel = computed(() => {
+  const user = authStore.user
+  if (!user) {
+    return '未登录'
+  }
+  return `${user.display_name} / ${roleLabels[user.role]}`
+})
+
+async function logout() {
+  authStore.logout()
+  await router.replace('/login')
+}
 </script>

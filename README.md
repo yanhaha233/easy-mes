@@ -93,6 +93,7 @@ cd D:\code\easy-mes\backend
 - CNC、去毛刺、质检工位
 - A 班、默认计划员、默认操作员、默认质检员
 - 划伤、尺寸超差、毛刺残留等不良原因
+- `planner / planner123`、`operator / operator123`、`inspector / inspector123`、`admin / admin123` 四个演示账号
 - 一张已确认并派工的演示工单
 
 如果只想初始化基础档案，不创建演示工单：

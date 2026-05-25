@@ -105,7 +105,7 @@ async def create_quality_record(
 
         work_order = await load_work_order(session, payload.work_order_no, actor)
         operation = pick_operation(work_order, inspect_type, payload.operation_id)
-        worker = await load_worker(session, actor.tenant_id, payload.inspector_code)
+        worker = await load_worker(session, actor.tenant_id, payload.inspector_code or actor.code)
         _, inspector_code, inspector_name = operator_snapshot(worker, payload.inspector_code or actor.code)
 
         record = QualityRecord(

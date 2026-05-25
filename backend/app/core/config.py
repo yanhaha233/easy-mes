@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     app_env: str = "local"
     api_v1_prefix: str = "/api/v1"
     database_url: str = "postgresql+asyncpg://easy_mes:easy_mes@127.0.0.1:15432/easy_mes"
+    auth_secret_key: str = "easy-mes-local-dev-secret"
+    access_token_expire_minutes: int = 480
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

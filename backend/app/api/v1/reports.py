@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import Actor, get_default_actor
+from app.api.deps import Actor, get_any_authenticated_actor
 from app.db.session import get_db_session
 from app.models.master_data import DefectReason, WorkCenter
 from app.models.production import ClockRecord, WorkOrder
@@ -48,7 +48,7 @@ def rate(actual_minutes: Decimal, planned_minutes: Decimal) -> Decimal:
 @router.get("/reports/defects", response_model=DefectReportRead)
 async def get_defect_report(
     db: AsyncSession = Depends(get_db_session),
-    actor: Actor = Depends(get_default_actor),
+    actor: Actor = Depends(get_any_authenticated_actor),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
 ) -> dict[str, Any]:
@@ -129,7 +129,7 @@ async def get_defect_report(
 @router.get("/reports/output", response_model=OutputReportRead)
 async def get_output_report(
     db: AsyncSession = Depends(get_db_session),
-    actor: Actor = Depends(get_default_actor),
+    actor: Actor = Depends(get_any_authenticated_actor),
     report_date: date | None = Query(default=None, alias="date"),
 ) -> dict[str, Any]:
     target_date = report_date or datetime.now(UTC).date()
@@ -256,7 +256,7 @@ async def get_output_report(
 @router.get("/reports/oee", response_model=OeeReportRead)
 async def get_oee_report(
     db: AsyncSession = Depends(get_db_session),
-    actor: Actor = Depends(get_default_actor),
+    actor: Actor = Depends(get_any_authenticated_actor),
     report_date: date | None = Query(default=None, alias="date"),
     planned_minutes: int = Query(default=480, ge=1, le=1440),
 ) -> dict[str, Any]:

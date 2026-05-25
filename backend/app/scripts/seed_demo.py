@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Actor
 from app.core.defaults import DEFAULT_OPERATOR_CODE, DEFAULT_PLANNER_CODE, DEFAULT_TENANT_ID
+from app.core.security import hash_password
 from app.db.session import AsyncSessionLocal, engine
+from app.models.auth import UserAccount
 from app.models.master_data import (
     Bom,
     BomLine,
@@ -45,6 +47,37 @@ async def upsert_by_code(
     session.add(entity)
     await session.flush()
     return entity
+
+
+async def upsert_user_account(
+    session: AsyncSession,
+    username: str,
+    password: str,
+    display_name: str,
+    role: str,
+    worker: Worker | None = None,
+) -> UserAccount:
+    user = await session.scalar(
+        select(UserAccount).where(UserAccount.tenant_id == DEFAULT_TENANT_ID, UserAccount.username == username)
+    )
+    values = {
+        "display_name": display_name,
+        "role": role,
+        "password_hash": hash_password(password),
+        "worker_id": worker.id if worker else None,
+        "is_active": True,
+        "remark": "演示账号",
+        "deleted_at": None,
+    }
+    if user:
+        for key, value in values.items():
+            setattr(user, key, value)
+        return user
+
+    user = UserAccount(tenant_id=DEFAULT_TENANT_ID, username=username, **values)
+    session.add(user)
+    await session.flush()
+    return user
 
 
 async def upsert_demo_bom(
@@ -265,7 +298,7 @@ async def seed_master_data(session: AsyncSession) -> None:
                 "remark": "演示班组",
             },
         )
-        await upsert_by_code(
+        planner = await upsert_by_code(
             session,
             Worker,
             DEFAULT_PLANNER_CODE,
@@ -277,7 +310,7 @@ async def seed_master_data(session: AsyncSession) -> None:
                 "remark": "系统默认计划员",
             },
         )
-        await upsert_by_code(
+        operator = await upsert_by_code(
             session,
             Worker,
             DEFAULT_OPERATOR_CODE,
@@ -289,7 +322,7 @@ async def seed_master_data(session: AsyncSession) -> None:
                 "remark": "系统默认车间操作员",
             },
         )
-        await upsert_by_code(
+        inspector = await upsert_by_code(
             session,
             Worker,
             "QC-001",
@@ -301,6 +334,10 @@ async def seed_master_data(session: AsyncSession) -> None:
                 "remark": "系统默认质检员",
             },
         )
+        await upsert_user_account(session, "planner", "planner123", "默认计划员", "planner", planner)
+        await upsert_user_account(session, "operator", "operator123", "默认操作员", "operator", operator)
+        await upsert_user_account(session, "inspector", "inspector123", "默认质检员", "inspector", inspector)
+        await upsert_user_account(session, "admin", "admin123", "系统管理员", "admin", None)
         for code, name, category in [
             ("D-SCRATCH", "划伤", "外观"),
             ("D-DIMENSION", "尺寸超差", "尺寸"),

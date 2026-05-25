@@ -45,6 +45,10 @@ jobs:
         working-directory: backend
         run: alembic upgrade head
 
+      - name: Seed demo users
+        working-directory: backend
+        run: python -m app.scripts.seed_demo --skip-work-order
+
       - name: Lint backend
         working-directory: backend
         run: ruff check app tests

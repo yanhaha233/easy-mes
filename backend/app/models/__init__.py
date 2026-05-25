@@ -1,3 +1,4 @@
+from app.models.auth import UserAccount
 from app.models.base import Base
 from app.models.master_data import (
     Bom,
@@ -33,6 +34,7 @@ __all__ = [
     "Routing",
     "RoutingOperation",
     "Team",
+    "UserAccount",
     "WorkCenter",
     "WorkOrder",
     "WorkOrderMaterial",

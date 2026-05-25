@@ -16,8 +16,21 @@ def idempotency_key(label: str, suffix: str) -> str:
     return f"test-{label}-{suffix}"
 
 
-def post_json(client: TestClient, url: str, payload: dict, *, key: str | None = None) -> dict:
-    headers = {"Idempotency-Key": key} if key else {}
+def auth_headers(token: str, key: str | None = None) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {token}"}
+    if key:
+        headers["Idempotency-Key"] = key
+    return headers
+
+
+def login_as(client: TestClient, username: str, password: str) -> str:
+    response = client.post("/api/v1/auth/login", json={"username": username, "password": password})
+    assert response.status_code == 200, response.text
+    return response.json()["access_token"]
+
+
+def post_json(client: TestClient, url: str, payload: dict, *, token: str, key: str | None = None) -> dict:
+    headers = auth_headers(token, key)
     response = client.post(url, json=payload, headers=headers)
     assert response.status_code in {200, 201}, response.text
     return response.json()
@@ -30,6 +43,10 @@ def test_mes_main_flow_from_master_data_to_traceability() -> None:
 
 
 def run_mes_main_flow(client: TestClient, suffix: str) -> None:
+    planner_token = login_as(client, "planner", "planner123")
+    operator_token = login_as(client, "operator", "operator123")
+    inspector_token = login_as(client, "inspector", "inspector123")
+
     product = post_json(
         client,
         "/api/v1/materials",
@@ -40,6 +57,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "unit": "pcs",
             "material_type": "product",
         },
+        token=planner_token,
     )
     steel = post_json(
         client,
@@ -51,6 +69,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "unit": "kg",
             "material_type": "raw_material",
         },
+        token=planner_token,
     )
     box = post_json(
         client,
@@ -61,6 +80,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "unit": "pcs",
             "material_type": "packing",
         },
+        token=planner_token,
     )
     cnc = post_json(
         client,
@@ -70,6 +90,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "name": "端到端 CNC",
             "work_center_type": "equipment",
         },
+        token=planner_token,
     )
     qc = post_json(
         client,
@@ -79,6 +100,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "name": "端到端质检",
             "work_center_type": "inspection",
         },
+        token=planner_token,
     )
     team = post_json(
         client,
@@ -87,6 +109,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "code": f"TEAM-E2E-{suffix}",
             "name": "端到端班组",
         },
+        token=planner_token,
     )
     operator = post_json(
         client,
@@ -97,6 +120,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "worker_type": "operator",
             "team_id": team["id"],
         },
+        token=planner_token,
     )
     inspector = post_json(
         client,
@@ -107,6 +131,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "worker_type": "inspector",
             "team_id": team["id"],
         },
+        token=planner_token,
     )
     post_json(
         client,
@@ -116,6 +141,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "name": "端到端尺寸超差",
             "category": "尺寸",
         },
+        token=planner_token,
     )
     post_json(
         client,
@@ -129,6 +155,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
                 {"component_material_id": box["id"], "line_no": 20, "qty_per": "1.000000"},
             ],
         },
+        token=planner_token,
     )
     post_json(
         client,
@@ -154,6 +181,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
                 },
             ],
         },
+        token=planner_token,
     )
 
     work_order = post_json(
@@ -168,16 +196,17 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "external_ref": f"SO-E2E-{suffix}",
             "customer_name": "端到端客户",
         },
+        token=planner_token,
         key=idempotency_key("create-wo", suffix),
     )
     assert work_order["status"] == "draft"
 
     work_order_no = work_order["work_order_no"]
-    confirmed = post_json(client, f"/api/v1/work-orders/{work_order_no}/confirm", {})
+    confirmed = post_json(client, f"/api/v1/work-orders/{work_order_no}/confirm", {}, token=planner_token)
     assert confirmed["status"] == "pending"
-    kitting = post_json(client, f"/api/v1/work-orders/{work_order_no}/kitting-check", {})
+    kitting = post_json(client, f"/api/v1/work-orders/{work_order_no}/kitting-check", {}, token=planner_token)
     assert kitting["is_complete"] is True
-    scheduled = post_json(client, f"/api/v1/work-orders/{work_order_no}/schedule", {})
+    scheduled = post_json(client, f"/api/v1/work-orders/{work_order_no}/schedule", {}, token=planner_token)
     assert scheduled["status"] == "scheduled"
 
     operation_id = scheduled["operations"][0]["id"]
@@ -185,6 +214,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
         client,
         f"/api/v1/operations/{operation_id}/start",
         {"operator_code": operator["code"]},
+        token=operator_token,
         key=idempotency_key("start-op-10", suffix),
     )
     assert start["status"] == "in_progress"
@@ -200,6 +230,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "result": "pass",
             "inspector_code": inspector["code"],
         },
+        token=inspector_token,
         key=idempotency_key("patrol", suffix),
     )
     assert patrol["result"] == "pass"
@@ -213,6 +244,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "actual_materials": [{"material_code": steel["code"], "qty": "5", "lot_no": f"LOT-{suffix}"}],
             "operator_code": operator["code"],
         },
+        token=operator_token,
         key=idempotency_key("clock-op-10", suffix),
     )
     assert first_clock["next_operation_id"] is not None
@@ -222,6 +254,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
         client,
         f"/api/v1/operations/{next_operation_id}/start",
         {"operator_code": operator["code"]},
+        token=operator_token,
         key=idempotency_key("start-op-20", suffix),
     )
     assert second_start["status"] == "in_progress"
@@ -235,6 +268,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "actual_materials": [],
             "operator_code": operator["code"],
         },
+        token=operator_token,
         key=idempotency_key("clock-op-20", suffix),
     )
     assert second_clock["work_order_status"] == "completed"
@@ -250,6 +284,7 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "result": "pass",
             "inspector_code": inspector["code"],
         },
+        token=inspector_token,
         key=idempotency_key("final", suffix),
     )
     assert final_quality["inspect_type"] == "final"
@@ -260,11 +295,15 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
             "lot_no": f"FG-{suffix}",
             "warehouse_code": "FG-01",
         },
+        token=planner_token,
         key=idempotency_key("receipt", suffix),
     )
     assert receipt["work_order"]["status"] == "closed"
 
-    trace_response = client.get(f"/api/v1/work-orders/{work_order_no}/traceability")
+    trace_response = client.get(
+        f"/api/v1/work-orders/{work_order_no}/traceability",
+        headers=auth_headers(planner_token),
+    )
     assert trace_response.status_code == 200, trace_response.text
     trace = trace_response.json()
     assert trace["status"] == "closed"
