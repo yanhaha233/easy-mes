@@ -54,6 +54,9 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
     assert wrong_tenant_login.status_code == 401, wrong_tenant_login.text
 
     planner_token = login_as(client, "planner", "planner123")
+    cookie_me_response = client.get("/api/v1/auth/me")
+    assert cookie_me_response.status_code == 200, cookie_me_response.text
+    assert cookie_me_response.json()["username"] == "planner"
     operator_token = login_as(client, "operator", "operator123")
     operator_two_token = login_as(client, "operator2", "operator123")
     inspector_token = login_as(client, "inspector", "inspector123")

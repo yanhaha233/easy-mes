@@ -13,6 +13,7 @@ from app.core.config import settings
 
 PASSWORD_HASH_NAME = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 120_000
+ACCESS_TOKEN_COOKIE_NAME = "easy_mes_access_token"
 
 
 def auth_secret_bytes() -> bytes:

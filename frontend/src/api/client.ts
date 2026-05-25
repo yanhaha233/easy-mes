@@ -64,9 +64,10 @@ export async function apiRequest<T>(
   path: string,
   options: RequestInit & { query?: Record<string, QueryValue> } = {},
 ): Promise<T> {
-  const { query, headers, body, ...rest } = options
+  const { query, headers, body, credentials, ...rest } = options
   const response = await fetch(`${API_BASE}${path}${buildQuery(query)}`, {
     ...rest,
+    credentials: credentials ?? 'include',
     headers: buildHeaders(body, headers),
     body,
   })

@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Cookie, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import decode_access_token
+from app.core.security import ACCESS_TOKEN_COOKIE_NAME, decode_access_token
 from app.db.session import get_db_session
 from app.models.master_data import Worker
 from app.services.auth import is_token_revoked, load_user_by_token_subject
@@ -25,13 +25,17 @@ class Actor:
 async def get_current_actor(
     db: AsyncSession = Depends(get_db_session),
     authorization: str | None = Header(default=None, alias="Authorization"),
+    access_token_cookie: str | None = Cookie(default=None, alias=ACCESS_TOKEN_COOKIE_NAME),
 ) -> Actor:
-    if not authorization or not authorization.lower().startswith("bearer "):
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    elif access_token_cookie:
+        token = access_token_cookie
+    else:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "AUTH_REQUIRED", "message": "请先登录"},
         )
-    token = authorization.split(" ", 1)[1].strip()
     try:
         payload = decode_access_token(token)
         tenant_id = UUID(str(payload["tenant_id"]))
