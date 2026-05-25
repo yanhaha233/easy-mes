@@ -38,7 +38,10 @@ class DocumentSequence(UuidPrimaryKeyMixin, Base):
 
 class WorkOrder(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
     __tablename__ = "work_orders"
-    __table_args__ = (UniqueConstraint("tenant_id", "work_order_no", name="uq_work_orders_tenant_no"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "work_order_no", name="uq_work_orders_tenant_no"),
+        Index("ix_work_orders_tenant_external_ref", "tenant_id", "external_ref"),
+    )
 
     work_order_no: Mapped[str] = mapped_column(String(64), nullable=False)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -205,6 +208,33 @@ class ProductionReceipt(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
     received_by: Mapped[str] = mapped_column(String(128), nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ErpWorkOrderFeedback(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
+    __tablename__ = "erp_work_order_feedbacks"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "receipt_id", name="uq_erp_work_order_feedbacks_tenant_receipt"),
+        Index("ix_erp_work_order_feedbacks_tenant_status", "tenant_id", "status", "created_at"),
+        Index("ix_erp_work_order_feedbacks_tenant_external_ref", "tenant_id", "external_ref"),
+    )
+
+    external_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    work_order_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("work_orders.id"))
+    work_order_no: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("production_receipts.id"))
+    receipt_no: Mapped[str] = mapped_column(String(64), nullable=False)
+    actual_good_qty: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    actual_bad_qty: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    lot_no: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    warehouse_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    request_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    response_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class QualityRecord(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):

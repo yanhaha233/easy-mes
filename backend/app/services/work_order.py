@@ -1116,6 +1116,9 @@ async def receive_work_order(
                     "received_qty": moneyless_decimal(receipt.good_qty),
                 },
             )
+            from app.services.erp_integration import create_erp_feedback_if_needed
+
+            await create_erp_feedback_if_needed(session, work_order, receipt)
 
         await session.flush()
         await session.refresh(work_order, attribute_names=["updated_at"])

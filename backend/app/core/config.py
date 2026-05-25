@@ -30,6 +30,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CORS_ORIGINS", "EASY_MES_CORS_ORIGINS"),
     )
     log_level: str = Field(default="INFO", validation_alias=AliasChoices("LOG_LEVEL", "EASY_MES_LOG_LEVEL"))
+    erp_integration_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ERP_INTEGRATION_API_KEY", "EASY_MES_ERP_INTEGRATION_API_KEY"),
+    )
 
     @model_validator(mode="after")
     def validate_production_secret(self) -> "Settings":

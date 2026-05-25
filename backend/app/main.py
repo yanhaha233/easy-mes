@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.auth import router as auth_router
 from app.api.v1.dashboard import router as dashboard_router
 from app.api.v1.health import router as health_router
+from app.api.v1.integrations import router as integrations_router
 from app.api.v1.master_data import router as master_data_router
 from app.api.v1.operations import router as operation_router
 from app.api.v1.quality import router as quality_router
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
     app.include_router(auth_router, prefix=settings.api_v1_prefix)
     app.include_router(health_router, prefix=settings.api_v1_prefix)
+    app.include_router(integrations_router, prefix=settings.api_v1_prefix)
     app.include_router(master_data_router, prefix=settings.api_v1_prefix)
     app.include_router(work_order_router, prefix=settings.api_v1_prefix)
     app.include_router(operation_router, prefix=settings.api_v1_prefix)
