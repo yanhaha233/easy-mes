@@ -326,11 +326,12 @@ async def create_scheduled_work_order(
         f"seed-{external_ref}-create",
     )
     work_order_no = created["work_order_no"]
-    await confirm_work_order(session, work_order_no, actor)
+    await confirm_work_order(session, work_order_no, actor, f"seed-{external_ref}-confirm")
     await schedule_work_order(
         session,
         work_order_no,
         actor,
+        f"seed-{external_ref}-schedule",
         WorkOrderSchedule(operator_code=operator_code, operation_assignments=operation_assignments or []),
     )
     return work_order_no

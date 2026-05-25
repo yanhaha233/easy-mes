@@ -40,26 +40,38 @@ export async function createWorkOrder(payload: WorkOrderCreatePayload) {
 }
 
 export async function confirmWorkOrder(workOrderNo: string) {
-  return apiRequest<WorkOrder>(`/work-orders/${workOrderNo}/confirm`, { method: 'POST' })
+  return withIdempotencyKey(`work-order:${workOrderNo}:confirm`, (idempotencyKey) =>
+    apiRequest<WorkOrder>(`/work-orders/${workOrderNo}/confirm`, {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+    }),
+  )
 }
 
-export async function cancelWorkOrder(workOrderNo: string, reason: string) {
+export async function cancelWorkOrder(workOrderNo: string, reason: string, allowAbandonWip = false) {
   return withIdempotencyKey(`work-order:${workOrderNo}:cancel`, (idempotencyKey) =>
     apiRequest<WorkOrder>(`/work-orders/${workOrderNo}/cancel`, {
       method: 'POST',
       headers: {
         'Idempotency-Key': idempotencyKey,
       },
-      body: JSON.stringify({ reason }),
+      body: JSON.stringify({ reason, allow_abandon_wip: allowAbandonWip }),
     }),
   )
 }
 
 export async function scheduleWorkOrder(workOrderNo: string, payload: WorkOrderSchedulePayload) {
-  return apiRequest<WorkOrder>(`/work-orders/${workOrderNo}/schedule`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
+  return withIdempotencyKey(`work-order:${workOrderNo}:schedule`, (idempotencyKey) =>
+    apiRequest<WorkOrder>(`/work-orders/${workOrderNo}/schedule`, {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify(payload),
+    }),
+  )
 }
 
 export async function receiveWorkOrder(workOrderNo: string, payload: ProductionReceiptCreatePayload) {

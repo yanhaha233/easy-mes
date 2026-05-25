@@ -15,7 +15,7 @@ from app.models.master_data import Worker
 from app.models.production import IdempotencyKey, QualityRecord, WorkOrder, WorkOrderOperation
 from app.schemas.quality import InspectType, QualityRecordCreate, QualityRecordRead
 from app.services.audit import write_audit_log
-from app.services.work_order import business_error, payload_hash, utcnow
+from app.services.work_order import business_error, payload_hash, sync_work_order_status_from_operations, utcnow
 
 
 def serialize_quality_record(record: QualityRecord) -> dict[str, Any]:
@@ -173,8 +173,12 @@ async def create_quality_record(
         session.add(record)
 
         if inspect_type == "patrol" and payload.result == "fail" and operation and operation.status == "in_progress":
+            old_order_status = work_order.status
             operation.status = "paused"
-            work_order.status = "paused"
+            _, new_order_status = sync_work_order_status_from_operations(
+                work_order,
+                sorted(work_order.operations, key=lambda item: item.seq),
+            )
             await write_audit_log(
                 session,
                 tenant_id=actor.tenant_id,
@@ -186,6 +190,18 @@ async def create_quality_record(
                 to_state="paused",
                 detail={"work_order_no": work_order.work_order_no, "quality_result": payload.result},
             )
+            if old_order_status != new_order_status:
+                await write_audit_log(
+                    session,
+                    tenant_id=actor.tenant_id,
+                    actor_code=inspector_code,
+                    entity_type="work_order",
+                    entity_id=work_order.id,
+                    action="quality_pause",
+                    from_state=old_order_status,
+                    to_state=new_order_status,
+                    detail={"operation_id": str(operation.id), "operation_seq": operation.seq},
+                )
 
         await session.flush()
         await session.refresh(record)

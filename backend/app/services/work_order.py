@@ -70,6 +70,16 @@ def request_hash(payload: WorkOrderCreate) -> str:
     return payload_hash(payload.model_dump(mode="json"))
 
 
+def confirm_request_hash(work_order_no: str) -> str:
+    return payload_hash({"work_order_no": work_order_no, "action": "confirm"})
+
+
+def schedule_request_hash(work_order_no: str, payload: WorkOrderSchedule) -> str:
+    return payload_hash(
+        {"work_order_no": work_order_no, "action": "schedule", "payload": payload.model_dump(mode="json")}
+    )
+
+
 def receipt_request_hash(work_order_no: str, payload: ProductionReceiptCreate) -> str:
     return payload_hash({"work_order_no": work_order_no, "payload": payload.model_dump(mode="json")})
 
@@ -80,6 +90,35 @@ def moneyless_decimal(value: Decimal) -> str:
 
 def ceil_seconds(value: Decimal) -> int:
     return int(value.to_integral_value(rounding=ROUND_CEILING))
+
+
+def derive_work_order_status(work_order: WorkOrder, operations: list[WorkOrderOperation]) -> str:
+    if work_order.status in {"draft", "closed", "cancelled"}:
+        return work_order.status
+
+    active_operations = [item for item in operations if item.deleted_at is None and item.status != "cancelled"]
+    if not active_operations:
+        return work_order.status
+    if all(item.status == "done" for item in active_operations):
+        return "completed"
+    if any(item.status in {"in_progress", "reporting"} for item in active_operations):
+        return "in_progress"
+    if all(item.status == "paused" for item in active_operations):
+        return "paused"
+    if any(item.status == "ready" for item in active_operations):
+        return "scheduled"
+    if all(item.status == "pending" for item in active_operations):
+        return "pending"
+    return work_order.status
+
+
+def sync_work_order_status_from_operations(
+    work_order: WorkOrder,
+    operations: list[WorkOrderOperation],
+) -> tuple[str, str]:
+    old_status = work_order.status
+    work_order.status = derive_work_order_status(work_order, operations)
+    return old_status, work_order.status
 
 
 async def next_work_order_no(session: AsyncSession, tenant_id: UUID, now: datetime) -> str:
@@ -543,8 +582,33 @@ async def load_work_order_by_no(
     return work_order
 
 
-async def confirm_work_order(session: AsyncSession, work_order_no: str, actor: Actor) -> dict[str, Any]:
+async def confirm_work_order(
+    session: AsyncSession,
+    work_order_no: str,
+    actor: Actor,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    now = utcnow()
+    hashed_payload = confirm_request_hash(work_order_no)
+
     async with session.begin():
+        cached = await session.scalar(
+            select(IdempotencyKey)
+            .where(
+                IdempotencyKey.tenant_id == actor.tenant_id,
+                IdempotencyKey.key == idempotency_key,
+            )
+            .with_for_update()
+        )
+        if cached:
+            if cached.request_hash != hashed_payload:
+                business_error(
+                    status.HTTP_409_CONFLICT,
+                    "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                    "同一幂等键重复提交了不同请求体",
+                )
+            return cached.response_body
+
         work_order = await load_work_order_by_no(session, work_order_no, actor, lock=True)
         if work_order.status != "draft":
             business_error(
@@ -566,17 +630,48 @@ async def confirm_work_order(session: AsyncSession, work_order_no: str, actor: A
         )
         await session.flush()
         await session.refresh(work_order, attribute_names=["updated_at"])
-        return serialize_work_order(work_order)
+        response = serialize_work_order(work_order)
+        session.add(
+            IdempotencyKey(
+                tenant_id=actor.tenant_id,
+                key=idempotency_key,
+                request_hash=hashed_payload,
+                response_body=response,
+                expires_at=now + timedelta(hours=24),
+            )
+        )
+        return response
 
 
 async def schedule_work_order(
     session: AsyncSession,
     work_order_no: str,
     actor: Actor,
+    idempotency_key: str,
     payload: WorkOrderSchedule | None = None,
 ) -> dict[str, Any]:
     payload = payload or WorkOrderSchedule()
+    now = utcnow()
+    hashed_payload = schedule_request_hash(work_order_no, payload)
+
     async with session.begin():
+        cached = await session.scalar(
+            select(IdempotencyKey)
+            .where(
+                IdempotencyKey.tenant_id == actor.tenant_id,
+                IdempotencyKey.key == idempotency_key,
+            )
+            .with_for_update()
+        )
+        if cached:
+            if cached.request_hash != hashed_payload:
+                business_error(
+                    status.HTTP_409_CONFLICT,
+                    "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                    "同一幂等键重复提交了不同请求体",
+                )
+            return cached.response_body
+
         work_order = await load_work_order_by_no(session, work_order_no, actor, lock=True)
         if work_order.status != "pending":
             business_error(
@@ -665,7 +760,17 @@ async def schedule_work_order(
         await session.refresh(work_order, attribute_names=["updated_at"])
         for operation in operations:
             await session.refresh(operation, attribute_names=["updated_at"])
-        return serialize_work_order(work_order)
+        response = serialize_work_order(work_order)
+        session.add(
+            IdempotencyKey(
+                tenant_id=actor.tenant_id,
+                key=idempotency_key,
+                request_hash=hashed_payload,
+                response_body=response,
+                expires_at=now + timedelta(hours=24),
+            )
+        )
+        return response
 
 
 async def cancel_work_order(

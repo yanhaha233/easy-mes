@@ -254,7 +254,13 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
     assert work_order["status"] == "draft"
 
     work_order_no = work_order["work_order_no"]
-    confirmed = post_json(client, f"/api/v1/work-orders/{work_order_no}/confirm", {}, token=planner_token)
+    confirmed = post_json(
+        client,
+        f"/api/v1/work-orders/{work_order_no}/confirm",
+        {},
+        token=planner_token,
+        key=idempotency_key("confirm-wo", suffix),
+    )
     assert confirmed["status"] == "pending"
     kitting = post_json(client, f"/api/v1/work-orders/{work_order_no}/kitting-check", {}, token=planner_token)
     assert kitting["is_complete"] is True
@@ -262,11 +268,17 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
     missing_skill_schedule_response = client.post(
         f"/api/v1/work-orders/{work_order_no}/schedule",
         json={"operator_code": "OP-002"},
-        headers=auth_headers(planner_token),
+        headers=auth_headers(planner_token, idempotency_key("schedule-missing-skill", suffix)),
     )
     assert missing_skill_schedule_response.status_code == 400, missing_skill_schedule_response.text
     assert missing_skill_schedule_response.json()["detail"]["code"] == "OPERATOR_OPERATION_SKILL_MISSING"
-    scheduled = post_json(client, f"/api/v1/work-orders/{work_order_no}/schedule", {}, token=planner_token)
+    scheduled = post_json(
+        client,
+        f"/api/v1/work-orders/{work_order_no}/schedule",
+        {},
+        token=planner_token,
+        key=idempotency_key("schedule-wo", suffix),
+    )
     assert scheduled["status"] == "scheduled"
     list_response = client.get(f"/api/v1/work-orders?keyword={work_order_no}", headers=auth_headers(planner_token))
     assert list_response.status_code == 200, list_response.text
@@ -289,8 +301,20 @@ def run_mes_main_flow(client: TestClient, suffix: str) -> None:
         key=idempotency_key("create-backfill-wo", suffix),
     )
     backfill_no = backfill_order["work_order_no"]
-    post_json(client, f"/api/v1/work-orders/{backfill_no}/confirm", {}, token=planner_token)
-    backfill_scheduled = post_json(client, f"/api/v1/work-orders/{backfill_no}/schedule", {}, token=planner_token)
+    post_json(
+        client,
+        f"/api/v1/work-orders/{backfill_no}/confirm",
+        {},
+        token=planner_token,
+        key=idempotency_key("confirm-backfill-wo", suffix),
+    )
+    backfill_scheduled = post_json(
+        client,
+        f"/api/v1/work-orders/{backfill_no}/schedule",
+        {},
+        token=planner_token,
+        key=idempotency_key("schedule-backfill-wo", suffix),
+    )
     backfill_operation_id = backfill_scheduled["operations"][0]["id"]
     backfill_request = post_json(
         client,

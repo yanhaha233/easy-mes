@@ -748,6 +748,10 @@ function operationWorkCenter(seq: number) {
   return operation ? `${operation.work_center_code} ${operation.work_center_name}` : ''
 }
 
+function hasActiveWip(status: string) {
+  return status === 'in_progress' || status === 'paused'
+}
+
 async function cancelOrder(row: WorkOrderListItem | WorkOrder) {
   try {
     const { value } = await ElMessageBox.prompt('请输入取消原因', `取消 ${row.work_order_no}`, {
@@ -756,7 +760,20 @@ async function cancelOrder(row: WorkOrderListItem | WorkOrder) {
       inputPattern: /\S+/,
       inputErrorMessage: '取消原因不能为空',
     })
-    const updated = await cancelWorkOrder(row.work_order_no, value.trim())
+    let allowAbandonWip = false
+    if (hasActiveWip(row.status)) {
+      await ElMessageBox.confirm(
+        '该工单存在已开工或暂停的在制工序。继续取消将记录为放弃在制品，请确认现场已经处理。',
+        '确认放弃在制品',
+        {
+          confirmButtonText: '确认放弃并取消',
+          cancelButtonText: '返回',
+          type: 'warning',
+        },
+      )
+      allowAbandonWip = true
+    }
+    const updated = await cancelWorkOrder(row.work_order_no, value.trim(), allowAbandonWip)
     ElMessage.success(`${updated.work_order_no} 已取消`)
     await loadOrders()
     detail.value = updated

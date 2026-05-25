@@ -31,7 +31,13 @@ from app.schemas.operation import (
     OperationStateChange,
 )
 from app.services.audit import write_audit_log
-from app.services.work_order import business_error, ensure_worker_can_run_operations, payload_hash, utcnow
+from app.services.work_order import (
+    business_error,
+    ensure_worker_can_run_operations,
+    payload_hash,
+    sync_work_order_status_from_operations,
+    utcnow,
+)
 
 QUICK_REPORT_THRESHOLD_SECONDS = 60
 
@@ -357,13 +363,12 @@ async def start_operation(
             worker = await load_worker_by_id(session, actor.tenant_id, operator_id)
             if worker:
                 await ensure_worker_can_run_operations(session, worker, [operation])
-        old_order_status = work_order.status
         operation.status = "in_progress"
         operation.started_at = now
         operation.started_by_operator_id = operator_id
         operation.started_by_operator_code = operator_code
         operation.started_by_operator_name = operator_name
-        work_order.status = "in_progress"
+        old_order_status, new_order_status = sync_work_order_status_from_operations(work_order, operations)
 
         await write_audit_log(
             session,
@@ -376,7 +381,7 @@ async def start_operation(
             to_state="in_progress",
             detail={"work_order_no": work_order.work_order_no, "operation_seq": operation.seq},
         )
-        if old_order_status != work_order.status:
+        if old_order_status != new_order_status:
             await write_audit_log(
                 session,
                 tenant_id=actor.tenant_id,
@@ -385,7 +390,7 @@ async def start_operation(
                 entity_id=work_order.id,
                 action="start",
                 from_state=old_order_status,
-                to_state=work_order.status,
+                to_state=new_order_status,
                 detail={"operation_id": str(operation.id), "operation_seq": operation.seq},
             )
         await session.flush()
@@ -448,8 +453,9 @@ async def pause_operation(
             )
 
         _, operator_code, _ = await resolve_operator(session, actor, payload.operator_code)
+        operations = sorted(work_order.operations, key=lambda item: item.seq)
         operation.status = "paused"
-        work_order.status = "paused"
+        old_order_status, new_order_status = sync_work_order_status_from_operations(work_order, operations)
         await write_audit_log(
             session,
             tenant_id=actor.tenant_id,
@@ -465,17 +471,18 @@ async def pause_operation(
                 "reason": payload.reason,
             },
         )
-        await write_audit_log(
-            session,
-            tenant_id=actor.tenant_id,
-            actor_code=operator_code,
-            entity_type="work_order",
-            entity_id=work_order.id,
-            action="pause",
-            from_state="in_progress",
-            to_state="paused",
-            detail={"operation_id": str(operation.id), "operation_seq": operation.seq, "reason": payload.reason},
-        )
+        if old_order_status != new_order_status:
+            await write_audit_log(
+                session,
+                tenant_id=actor.tenant_id,
+                actor_code=operator_code,
+                entity_type="work_order",
+                entity_id=work_order.id,
+                action="pause",
+                from_state=old_order_status,
+                to_state=new_order_status,
+                detail={"operation_id": str(operation.id), "operation_seq": operation.seq, "reason": payload.reason},
+            )
         await session.flush()
         await session.refresh(work_order, attribute_names=["updated_at"])
         await session.refresh(operation, attribute_names=["updated_at"])
@@ -535,8 +542,9 @@ async def resume_operation(
             )
 
         _, operator_code, _ = await resolve_operator(session, actor, payload.operator_code)
+        operations = sorted(work_order.operations, key=lambda item: item.seq)
         operation.status = "in_progress"
-        work_order.status = "in_progress"
+        old_order_status, new_order_status = sync_work_order_status_from_operations(work_order, operations)
         await write_audit_log(
             session,
             tenant_id=actor.tenant_id,
@@ -552,17 +560,18 @@ async def resume_operation(
                 "reason": payload.reason,
             },
         )
-        await write_audit_log(
-            session,
-            tenant_id=actor.tenant_id,
-            actor_code=operator_code,
-            entity_type="work_order",
-            entity_id=work_order.id,
-            action="resume",
-            from_state="paused",
-            to_state="in_progress",
-            detail={"operation_id": str(operation.id), "operation_seq": operation.seq, "reason": payload.reason},
-        )
+        if old_order_status != new_order_status:
+            await write_audit_log(
+                session,
+                tenant_id=actor.tenant_id,
+                actor_code=operator_code,
+                entity_type="work_order",
+                entity_id=work_order.id,
+                action="resume",
+                from_state=old_order_status,
+                to_state=new_order_status,
+                detail={"operation_id": str(operation.id), "operation_seq": operation.seq, "reason": payload.reason},
+            )
         await session.flush()
         await session.refresh(work_order, attribute_names=["updated_at"])
         await session.refresh(operation, attribute_names=["updated_at"])
@@ -962,15 +971,10 @@ async def approve_backfill_request(
             (item for item in operations if item.seq > operation.seq and item.status == "pending"),
             None,
         )
-        old_order_status = work_order.status
         if next_operation:
             pass_good_qty_to_next_operation(operation, next_operation)
             next_operation.status = "ready"
-            work_order.status = "in_progress"
-        elif all(item.status == "done" for item in operations):
-            work_order.status = "completed"
-        else:
-            work_order.status = "in_progress"
+        old_order_status, new_order_status = sync_work_order_status_from_operations(work_order, operations)
         sync_work_order_actual_qty(work_order, operations)
 
         row.status = "approved"
@@ -1026,7 +1030,7 @@ async def approve_backfill_request(
                     "source_operation_id": str(operation.id),
                 },
             )
-        if old_order_status != work_order.status:
+        if old_order_status != new_order_status:
             await write_audit_log(
                 session,
                 tenant_id=actor.tenant_id,
@@ -1035,7 +1039,7 @@ async def approve_backfill_request(
                 entity_id=work_order.id,
                 action="backfill_clock",
                 from_state=old_order_status,
-                to_state=work_order.status,
+                to_state=new_order_status,
                 detail={
                     "operation_id": str(operation.id),
                     "operation_seq": operation.seq,
@@ -1213,11 +1217,9 @@ async def clock_operation(
                 next_operation.assigned_operator_id = operation.assigned_operator_id or operator_id
                 next_operation.assigned_operator_code = operation.assigned_operator_code or operator_code
                 next_operation.assigned_operator_name = operation.assigned_operator_name or operator_name
-            sync_work_order_actual_qty(work_order, operations)
-        elif all(item.status == "done" for item in operations):
-            sync_work_order_actual_qty(work_order, operations)
-            old_order_status = work_order.status
-            work_order.status = "completed"
+        sync_work_order_actual_qty(work_order, operations)
+        old_order_status, new_order_status = sync_work_order_status_from_operations(work_order, operations)
+        if new_order_status == "completed" and old_order_status != new_order_status:
             await write_audit_log(
                 session,
                 tenant_id=actor.tenant_id,
@@ -1226,7 +1228,7 @@ async def clock_operation(
                 entity_id=work_order.id,
                 action="complete",
                 from_state=old_order_status,
-                to_state="completed",
+                to_state=new_order_status,
                 detail={
                     "operation_id": str(operation.id),
                     "operation_seq": operation.seq,
@@ -1234,8 +1236,6 @@ async def clock_operation(
                     "actual_bad_qty": str(work_order.actual_bad_qty),
                 },
             )
-        else:
-            sync_work_order_actual_qty(work_order, operations)
 
         await write_audit_log(
             session,

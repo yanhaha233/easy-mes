@@ -1,3 +1,5 @@
+import { ApiError } from './client'
+
 const IDEMPOTENCY_STORAGE_PREFIX = 'easy_mes:idempotency:'
 
 const memoryKeys = new Map<string, string>()
@@ -56,7 +58,14 @@ export function pendingIdempotencyKey(scope: string) {
 
 export async function withIdempotencyKey<T>(scope: string, request: (idempotencyKey: string) => Promise<T>) {
   const idempotencyKey = pendingIdempotencyKey(scope)
-  const response = await request(idempotencyKey)
-  removeStoredKey(scope)
-  return response
+  try {
+    const response = await request(idempotencyKey)
+    removeStoredKey(scope)
+    return response
+  } catch (error) {
+    if (error instanceof ApiError && error.status < 500) {
+      removeStoredKey(scope)
+    }
+    throw error
+  }
 }

@@ -77,8 +77,14 @@ async def confirm_work_order_endpoint(
     work_order_no: str,
     db: AsyncSession = Depends(get_db_session),
     actor: Actor = Depends(get_default_actor),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    return await confirm_work_order(db, work_order_no, actor)
+    if not idempotency_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "IDEMPOTENCY_KEY_REQUIRED", "message": "缺少 Idempotency-Key 请求头"},
+        )
+    return await confirm_work_order(db, work_order_no, actor, idempotency_key)
 
 
 @router.post("/work-orders/{work_order_no}/cancel", response_model=WorkOrderRead)
@@ -103,8 +109,14 @@ async def schedule_work_order_endpoint(
     payload: WorkOrderSchedule | None = None,
     db: AsyncSession = Depends(get_db_session),
     actor: Actor = Depends(get_default_actor),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    return await schedule_work_order(db, work_order_no, actor, payload)
+    if not idempotency_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "IDEMPOTENCY_KEY_REQUIRED", "message": "缺少 Idempotency-Key 请求头"},
+        )
+    return await schedule_work_order(db, work_order_no, actor, idempotency_key, payload)
 
 
 @router.post("/work-orders/{work_order_no}/kitting-check", response_model=KittingCheckRead)
