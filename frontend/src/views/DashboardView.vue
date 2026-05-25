@@ -12,22 +12,22 @@
     </section>
 
     <section v-loading="loading" class="metrics" aria-label="生产概览">
-      <article class="metric">
+      <RouterLink class="metric metric-link" :to="{ name: 'work-orders' }">
         <span>全部工单</span>
         <strong>{{ dashboard.total }}</strong>
-      </article>
-      <article class="metric">
+      </RouterLink>
+      <RouterLink class="metric metric-link" :to="{ name: 'work-orders', query: { status: 'in_progress' } }">
         <span>进行中</span>
         <strong>{{ dashboard.in_progress }}</strong>
-      </article>
-      <article class="metric">
+      </RouterLink>
+      <RouterLink class="metric metric-link" :to="{ name: 'work-orders', query: { operation_status: 'ready,in_progress' } }">
         <span>待报工工序</span>
         <strong>{{ dashboard.ready_operations + dashboard.in_progress_operations }}</strong>
-      </article>
-      <article class="metric">
+      </RouterLink>
+      <RouterLink class="metric metric-link" :to="{ name: 'work-orders', query: { status: 'completed' } }">
         <span>完工工单</span>
         <strong>{{ dashboard.completed }}</strong>
-      </article>
+      </RouterLink>
     </section>
 
     <section class="section-header output-header">

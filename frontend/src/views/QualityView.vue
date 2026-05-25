@@ -176,9 +176,11 @@ import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { createQualityRecord, listQualityRecords } from '../api/quality'
 import { getDefectReport } from '../api/reports'
+import { useAuthStore } from '../stores/auth'
 import type { InspectResult, InspectType, QualityRecord } from '../types/quality'
 import type { DefectReport } from '../types/report'
 
+const authStore = useAuthStore()
 const loading = ref(false)
 const qualityLoading = ref(false)
 const qualitySaving = ref(false)
@@ -290,7 +292,7 @@ async function submitQualityRecord() {
       pass_qty: qualityForm.pass_qty,
       fail_qty: qualityForm.fail_qty,
       result: qualityForm.result,
-      inspector_code: 'default_operator',
+      inspector_code: authStore.user?.worker_code || null,
       disposition: qualityForm.disposition || null,
       remark: qualityForm.remark.trim() || null,
     })

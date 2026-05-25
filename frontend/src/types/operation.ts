@@ -20,6 +20,8 @@ export interface OperationRead extends EntityRead {
   good_qty: string
   bad_qty: string
   status: OperationStatus
+  assigned_operator_code: string | null
+  assigned_operator_name: string | null
   started_at: string | null
   started_by_operator_code: string | null
   started_by_operator_name: string | null
@@ -30,4 +32,8 @@ export interface OperationClockResponse {
   work_order_status: WorkOrderStatus
   next_operation_id: UUID | null
   clock_record_id: UUID
+  elapsed_seconds: number | null
+  time_anomaly: boolean
+  time_anomaly_reason: string | null
+  time_anomaly_detail: Record<string, unknown> | null
 }

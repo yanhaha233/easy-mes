@@ -27,6 +27,14 @@
           <el-select v-model="state.status" clearable placeholder="状态" @change="loadOrders">
             <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
+          <el-select v-model="state.operationStatus" clearable placeholder="工序" @change="loadOrders">
+            <el-option
+              v-for="item in operationStatusOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
+          </el-select>
           <el-button :icon="Refresh" :loading="state.loading" @click="loadOrders">刷新</el-button>
         </div>
       </div>
@@ -44,6 +52,9 @@
         </el-table-column>
         <el-table-column label="优先级" width="100">
           <template #default="{ row }">{{ priorityText(row.priority) }}</template>
+        </el-table-column>
+        <el-table-column label="派工" min-width="130">
+          <template #default="{ row }">{{ assigneeText(row) }}</template>
         </el-table-column>
         <el-table-column prop="due_date" label="交期" width="130" />
         <el-table-column prop="customer_name" label="客户" min-width="140" />
@@ -76,6 +87,8 @@
             <dd>{{ priorityText(row.priority) }}</dd>
             <dt>客户</dt>
             <dd>{{ row.customer_name || '-' }}</dd>
+            <dt>派工</dt>
+            <dd>{{ assigneeText(row) }}</dd>
           </dl>
           <div class="record-actions">
             <el-button v-if="row.status === 'draft'" type="primary" @click="confirmOrder(row)">确认</el-button>
@@ -187,6 +200,7 @@
             <div>
               <strong>{{ operation.seq }} {{ operation.operation_name }}</strong>
               <span>{{ operation.work_center_code }} {{ operation.work_center_name }}</span>
+              <span v-if="operation.assigned_operator_name">派工 {{ operation.assigned_operator_name }}</span>
             </div>
             <el-tag effect="plain">{{ operationStatusLabels[operation.status] }}</el-tag>
           </article>
@@ -216,7 +230,7 @@
               <span class="timeline-dot" />
               <div>
                 <strong>{{ event.title }}</strong>
-                <span>{{ formatTime(event.occurred_at) }} · {{ event.actor_code || 'system' }}</span>
+                <span>{{ formatTime(event.occurred_at) }} · {{ actorText(event) }}</span>
                 <p v-if="timelineDetailText(event)">{{ timelineDetailText(event) }}</p>
               </div>
             </article>
@@ -225,11 +239,50 @@
         </section>
       </div>
     </el-drawer>
+    <el-dialog v-model="scheduleDialogOpen" title="按工序派工" width="560px">
+      <el-form label-position="top" @submit.prevent>
+        <el-form-item label="默认操作员">
+          <el-select v-model="scheduleForm.operator_code" filterable placeholder="选择操作员">
+            <el-option
+              v-for="item in operatorOptions"
+              :key="item.code"
+              :label="`${item.code} ${item.name}`"
+              :value="item.code"
+            />
+          </el-select>
+        </el-form-item>
+        <div class="schedule-lines">
+          <article
+            v-for="assignment in scheduleForm.operation_assignments"
+            :key="assignment.operation_seq"
+            class="schedule-line"
+          >
+            <div>
+              <strong>{{ assignment.operation_seq }} {{ operationName(assignment.operation_seq) }}</strong>
+              <span>{{ operationWorkCenter(assignment.operation_seq) }}</span>
+            </div>
+            <el-select v-model="assignment.operator_code" filterable placeholder="选择操作员">
+              <el-option
+                v-for="item in operatorOptions"
+                :key="item.code"
+                :label="`${item.code} ${item.name}`"
+                :value="item.code"
+              />
+            </el-select>
+          </article>
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="scheduleDialogOpen = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="submitSchedule">确认派工</el-button>
+      </template>
+    </el-dialog>
   </main>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search, View } from '@element-plus/icons-vue'
 import { ApiError } from '../api/client'
@@ -244,7 +297,7 @@ import {
   receiveWorkOrder,
   scheduleWorkOrder,
 } from '../api/workOrders'
-import type { Material } from '../types/masterData'
+import type { Material, Worker } from '../types/masterData'
 import type {
   Priority,
   TraceTimelineEvent,
@@ -262,13 +315,18 @@ import {
 } from '../utils/labels'
 
 const pageSize = 20
+const route = useRoute()
 const createDrawerOpen = ref(false)
+const scheduleDialogOpen = ref(false)
 const detailDrawerOpen = ref(false)
 const saving = ref(false)
 const traceLoading = ref(false)
 const detail = ref<WorkOrder | null>(null)
 const trace = ref<WorkOrderTraceability | null>(null)
 const materials = ref<Material[]>([])
+const workers = ref<Worker[]>([])
+const scheduleTarget = ref<WorkOrderListItem | null>(null)
+const scheduleDetail = ref<WorkOrder | null>(null)
 
 const state = reactive({
   items: [] as WorkOrderListItem[],
@@ -277,6 +335,7 @@ const state = reactive({
   page: 1,
   keyword: '',
   status: '',
+  operationStatus: '',
 })
 
 const form = reactive({
@@ -290,15 +349,48 @@ const form = reactive({
   remark: '',
 })
 
+const scheduleForm = reactive({
+  operator_code: '',
+  operation_assignments: [] as Array<{ operation_seq: number; operator_code: string }>,
+})
+
 const statusOptions = Object.entries(workOrderStatusLabels).map(([value, label]) => ({ value, label }))
+const operationStatusOptions = [
+  { value: 'ready,in_progress', label: '待报工' },
+  { value: 'ready', label: '待开工' },
+  { value: 'in_progress', label: '进行中' },
+  { value: 'done', label: '已完成' },
+]
 
 const producibleMaterials = computed(() =>
   materials.value.filter((item) => item.is_active && ['product', 'semi_finished'].includes(item.material_type)),
 )
+const operatorOptions = computed(() =>
+  workers.value.filter((item) => item.is_active && item.worker_type === 'operator'),
+)
 
 onMounted(async () => {
-  await Promise.all([loadMaterials(), loadOrders()])
+  syncFiltersFromRoute()
+  await Promise.all([loadMaterials(), loadWorkers(), loadOrders()])
 })
+
+watch(
+  () => route.query,
+  async () => {
+    syncFiltersFromRoute()
+    state.page = 1
+    await loadOrders()
+  },
+)
+
+function queryText(value: unknown) {
+  return Array.isArray(value) ? String(value[0] || '') : String(value || '')
+}
+
+function syncFiltersFromRoute() {
+  state.status = queryText(route.query.status)
+  state.operationStatus = queryText(route.query.operation_status)
+}
 
 function showError(error: unknown) {
   if (error instanceof ApiError) {
@@ -322,12 +414,22 @@ async function loadMaterials() {
   }
 }
 
+async function loadWorkers() {
+  try {
+    const page = await listMaster('workers', { is_active: true, limit: 100, offset: 0 })
+    workers.value = page.items
+  } catch (error) {
+    showError(error)
+  }
+}
+
 async function loadOrders() {
   state.loading = true
   try {
     const page = await listWorkOrders({
       keyword: state.keyword,
       status: state.status,
+      operation_status: state.operationStatus,
       limit: pageSize,
       offset: (state.page - 1) * pageSize,
     })
@@ -418,15 +520,59 @@ async function confirmOrder(row: WorkOrderListItem) {
 }
 
 async function scheduleOrder(row: WorkOrderListItem) {
+  if (operatorOptions.value.length === 0) {
+    ElMessage.warning('请先在基础档案里维护操作员')
+    return
+  }
   try {
-    const updated = await scheduleWorkOrder(row.work_order_no)
+    const workOrder = await getWorkOrder(row.id)
+    const defaultOperator = operatorOptions.value[0]?.code || ''
+    scheduleTarget.value = row
+    scheduleDetail.value = workOrder
+    scheduleForm.operator_code = defaultOperator
+    scheduleForm.operation_assignments = workOrder.operations
+      .filter((operation) => operation.status === 'pending')
+      .map((operation) => ({
+        operation_seq: operation.seq,
+        operator_code: operation.assigned_operator_code || defaultOperator,
+      }))
+    scheduleDialogOpen.value = true
+  } catch (error) {
+    showError(error)
+  }
+}
+
+async function submitSchedule() {
+  if (!scheduleTarget.value || scheduleForm.operation_assignments.some((item) => !item.operator_code)) {
+    ElMessage.warning('请为每道工序选择操作员')
+    return
+  }
+  saving.value = true
+  try {
+    const updated = await scheduleWorkOrder(scheduleTarget.value.work_order_no, {
+      operator_code: scheduleForm.operator_code || null,
+      operation_assignments: scheduleForm.operation_assignments,
+    })
+    scheduleDialogOpen.value = false
     ElMessage.success(`${updated.work_order_no} 已派工`)
     await loadOrders()
     detail.value = updated
     await loadTrace(updated.work_order_no)
   } catch (error) {
     showError(error)
+  } finally {
+    saving.value = false
   }
+}
+
+function operationName(seq: number) {
+  const operation = scheduleDetail.value?.operations.find((item) => item.seq === seq)
+  return operation?.operation_name || ''
+}
+
+function operationWorkCenter(seq: number) {
+  const operation = scheduleDetail.value?.operations.find((item) => item.seq === seq)
+  return operation ? `${operation.work_center_code} ${operation.work_center_name}` : ''
 }
 
 async function cancelOrder(row: WorkOrderListItem | WorkOrder) {
@@ -496,14 +642,42 @@ function formatTime(value: string) {
   return new Date(value).toLocaleString()
 }
 
+function formatDuration(seconds: unknown) {
+  const value = Number(seconds)
+  if (!Number.isFinite(value) || value < 0) {
+    return ''
+  }
+  if (value < 60) {
+    return `${Math.floor(value)} 秒`
+  }
+  const minutes = Math.floor(value / 60)
+  const restSeconds = Math.floor(value % 60)
+  return restSeconds > 0 ? `${minutes} 分 ${restSeconds} 秒` : `${minutes} 分`
+}
+
 function timelineDetailText(event: TraceTimelineEvent) {
+  const parts: string[] = []
   if (event.good_qty !== null || event.bad_qty !== null) {
-    return `合格 ${event.good_qty || 0} / 不良 ${event.bad_qty || 0}`
+    parts.push(`合格 ${event.good_qty || 0} / 不良 ${event.bad_qty || 0}`)
   }
-  if (event.detail?.work_center) {
-    return String(event.detail.work_center)
+  const elapsedText = formatDuration(event.detail?.elapsed_seconds)
+  if (elapsedText) {
+    parts.push(`用时 ${elapsedText}`)
   }
-  return ''
+  if (event.detail?.time_anomaly) {
+    parts.push('时间异常')
+  }
+  if (!parts.length && event.detail?.work_center) {
+    parts.push(String(event.detail.work_center))
+  }
+  return parts.join(' · ')
+}
+
+function actorText(event: TraceTimelineEvent) {
+  if (event.actor_name && event.actor_code) {
+    return `${event.actor_name} (${event.actor_code})`
+  }
+  return event.actor_name || event.actor_code || 'system'
 }
 
 function workOrderStatusTag(status: WorkOrderStatus) {
@@ -532,5 +706,15 @@ function canCancel(status: WorkOrderStatus) {
 
 function priorityText(priority: Priority) {
   return priorityLabels[priority] || priority
+}
+
+function assigneeText(row: WorkOrderListItem) {
+  if (row.assigned_operator_names.length) {
+    return row.assigned_operator_names.join('、')
+  }
+  if (row.assigned_operator_codes.length) {
+    return row.assigned_operator_codes.join('、')
+  }
+  return ['draft', 'pending'].includes(row.status) ? '未派工' : '未指定'
 }
 </script>

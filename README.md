@@ -62,6 +62,8 @@ python -m venv .venv
 GET http://127.0.0.1:8010/api/v1/health
 ```
 
+健康检查不需要登录 token。生产环境不要使用默认 `AUTH_SECRET_KEY`，本地可参考 `backend/.env.example`。
+
 ### 前端
 
 PowerShell 环境下优先使用 `npm.cmd`，避免执行策略拦截 `npm.ps1`。
@@ -89,17 +91,28 @@ cd D:\code\easy-mes\backend
 
 脚本会创建：
 
-- 演示物料、BOM、工艺路线
-- CNC、去毛刺、质检工位
-- A 班、默认计划员、默认操作员、默认质检员
-- 划伤、尺寸超差、毛刺残留等不良原因
-- `planner / planner123`、`operator / operator123`、`inspector / inspector123`、`admin / admin123` 四个演示账号
-- 一张已确认并派工的演示工单
+- 产品 `P-MVP-001`、原料 `M-MVP-RAW`、一层 BOM
+- 工位 `WC-MACH-01`、`WC-QC-01`
+- 工艺路线 `OP-10 -> OP-20`
+- 班组 `TEAM-MVP`，计划员、两个操作员、质检员
+- 工序技能矩阵：`default_operator` 可做 `OP-10 / OP-20`，`OP-002` 只可做 `OP-10`
+- 不良原因 `D-MVP-NG`
+- `planner / planner123`、`operator / operator123`、`operator2 / operator123`、`inspector / inspector123`、`admin / admin123` 演示账号
+- 两张已确认并派工的演示工单：第一张全部派给 `default_operator`；第二张 `OP-10` 派给 `OP-002`，`OP-20` 派给 `default_operator`
 
 如果只想初始化基础档案，不创建演示工单：
 
 ```powershell
 .\.venv\Scripts\python -m app.scripts.seed_demo --skip-work-order
+```
+
+`--skip-work-order` 和 `--skip-work-orders` 都可用。
+
+过期的退出 token 与幂等键可以定期清理，建议生产环境每天跑一次：
+
+```powershell
+cd D:\code\easy-mes\backend
+.\.venv\Scripts\python -m app.scripts.cleanup_expired_runtime_data
 ```
 
 ## 自动校验

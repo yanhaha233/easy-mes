@@ -28,6 +28,8 @@ class MaterialCreate(MaterialBase):
 
 
 class MaterialUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=128)
     spec: str | None = Field(default=None, max_length=255)
     unit: str | None = Field(default=None, min_length=1, max_length=32)
@@ -55,6 +57,8 @@ class WorkCenterCreate(WorkCenterBase):
 
 
 class WorkCenterUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=128)
     work_center_type: WorkCenterType | None = None
     location: str | None = Field(default=None, max_length=128)
@@ -79,6 +83,8 @@ class TeamCreate(TeamBase):
 
 
 class TeamUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=128)
     leader_name: str | None = Field(default=None, max_length=128)
     is_active: bool | None = None
@@ -103,6 +109,8 @@ class WorkerCreate(WorkerBase):
 
 
 class WorkerUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=128)
     worker_type: WorkerType | None = None
     team_id: UUID | None = None
@@ -112,6 +120,25 @@ class WorkerUpdate(BaseModel):
 
 class WorkerRead(WorkerBase, EntityRead):
     pass
+
+
+class OperationSkillOptionRead(BaseModel):
+    operation_code: str
+    operation_name: str
+
+
+class WorkerOperationSkillRead(EntityRead):
+    worker_id: UUID
+    operation_code: str
+    operation_name: str | None = None
+    is_active: bool
+    remark: str | None = None
+
+
+class WorkerOperationSkillUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_codes: list[str] = Field(default_factory=list)
 
 
 class DefectReasonBase(BaseModel):
@@ -127,6 +154,8 @@ class DefectReasonCreate(DefectReasonBase):
 
 
 class DefectReasonUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=128)
     category: str | None = Field(default=None, max_length=64)
     is_active: bool | None = None
@@ -161,6 +190,8 @@ class BomCreate(BaseModel):
 
 
 class BomUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     status: MasterStatus | None = None
     remark: str | None = None
     lines: list[BomLineCreate] | None = None
@@ -201,6 +232,8 @@ class RoutingCreate(BaseModel):
 
 
 class RoutingUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     status: MasterStatus | None = None
     remark: str | None = None
     operations: list[RoutingOperationCreate] | None = None

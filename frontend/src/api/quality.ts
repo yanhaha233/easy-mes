@@ -1,5 +1,5 @@
 import { apiRequest } from './client'
-import type { Page } from '../types/masterData'
+import type { DefectReason, Page } from '../types/masterData'
 import type { InspectType, QualityRecord, QualityRecordCreatePayload } from '../types/quality'
 
 const endpointByType: Record<InspectType, string> = {
@@ -20,4 +20,8 @@ export async function createQualityRecord(inspectType: InspectType, payload: Qua
 
 export async function listQualityRecords(params: { work_order_no?: string; limit?: number; offset?: number } = {}) {
   return apiRequest<Page<QualityRecord>>('/quality/records', { query: { ...params } })
+}
+
+export async function listQualityDefectReasons() {
+  return apiRequest<DefectReason[]>('/quality/defect-reasons')
 }

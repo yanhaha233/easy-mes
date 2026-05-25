@@ -10,10 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import Actor
+from app.models.master_data import Worker
 from app.models.production import IdempotencyKey, QualityRecord, WorkOrder, WorkOrderOperation
 from app.schemas.quality import InspectType, QualityRecordCreate, QualityRecordRead
 from app.services.audit import write_audit_log
-from app.services.operation import load_worker, operator_snapshot
 from app.services.work_order import business_error, payload_hash, utcnow
 
 
@@ -76,6 +76,45 @@ def pick_operation(
     return operations[0]
 
 
+async def load_inspector(session: AsyncSession, actor: Actor, inspector_code: str | None) -> Worker:
+    if actor.role != "admin" and not actor.worker_id and not actor.worker_code:
+        business_error(status.HTTP_403_FORBIDDEN, "INSPECTOR_ACCOUNT_NOT_LINKED", "当前账号未绑定质检员档案")
+
+    if inspector_code and actor.role != "admin" and actor.worker_code != inspector_code:
+        business_error(status.HTTP_403_FORBIDDEN, "INSPECTOR_CODE_MISMATCH", "不能代替其他质检员确认")
+
+    if inspector_code:
+        worker = await session.scalar(
+            select(Worker).where(
+                Worker.tenant_id == actor.tenant_id,
+                Worker.code == inspector_code,
+                Worker.deleted_at.is_(None),
+                Worker.is_active.is_(True),
+            )
+        )
+    elif actor.worker_id:
+        worker = await session.get(Worker, actor.worker_id)
+        if worker and (worker.tenant_id != actor.tenant_id or worker.deleted_at is not None or not worker.is_active):
+            worker = None
+    elif actor.worker_code:
+        worker = await session.scalar(
+            select(Worker).where(
+                Worker.tenant_id == actor.tenant_id,
+                Worker.code == actor.worker_code,
+                Worker.deleted_at.is_(None),
+                Worker.is_active.is_(True),
+            )
+        )
+    else:
+        worker = None
+
+    if not worker:
+        business_error(status.HTTP_400_BAD_REQUEST, "INSPECTOR_NOT_FOUND", "质检员不存在或已停用")
+    if worker.worker_type != "inspector":
+        business_error(status.HTTP_400_BAD_REQUEST, "WORKER_NOT_INSPECTOR", "质检确认人必须是质检员")
+    return worker
+
+
 async def create_quality_record(
     session: AsyncSession,
     inspect_type: InspectType,
@@ -105,8 +144,9 @@ async def create_quality_record(
 
         work_order = await load_work_order(session, payload.work_order_no, actor)
         operation = pick_operation(work_order, inspect_type, payload.operation_id)
-        worker = await load_worker(session, actor.tenant_id, payload.inspector_code or actor.code)
-        _, inspector_code, inspector_name = operator_snapshot(worker, payload.inspector_code or actor.code)
+        inspector = await load_inspector(session, actor, payload.inspector_code)
+        inspector_code = inspector.code
+        inspector_name = inspector.name
 
         record = QualityRecord(
             tenant_id=actor.tenant_id,

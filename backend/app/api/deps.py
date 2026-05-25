@@ -6,7 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_access_token
 from app.db.session import get_db_session
-from app.services.auth import load_user_by_token_subject
+from app.models.master_data import Worker
+from app.services.auth import is_token_revoked, load_user_by_token_subject
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,9 @@ class Actor:
     role: str = "planner"
     display_name: str = ""
     user_id: UUID | None = None
+    worker_id: UUID | None = None
+    worker_code: str | None = None
+    worker_name: str | None = None
 
 
 async def get_current_actor(
@@ -32,11 +36,18 @@ async def get_current_actor(
         payload = decode_access_token(token)
         tenant_id = UUID(str(payload["tenant_id"]))
         username = str(payload["sub"])
+        token_jti = str(payload["jti"])
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "INVALID_TOKEN", "message": "登录状态无效或已过期"},
         ) from exc
+
+    if await is_token_revoked(db, tenant_id, token_jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "TOKEN_REVOKED", "message": "登录状态已退出，请重新登录"},
+        )
 
     user = await load_user_by_token_subject(db, tenant_id, username)
     if not user:
@@ -44,13 +55,22 @@ async def get_current_actor(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "INVALID_TOKEN", "message": "登录用户不存在或已停用"},
         )
+    worker = None
+    if user.worker_id:
+        worker = await db.get(Worker, user.worker_id)
+        if worker and (worker.tenant_id != user.tenant_id or worker.deleted_at is not None or not worker.is_active):
+            worker = None
     actor = Actor(
         tenant_id=user.tenant_id,
         code=user.username,
         role=user.role,
         display_name=user.display_name,
         user_id=user.id,
+        worker_id=worker.id if worker else None,
+        worker_code=worker.code if worker else None,
+        worker_name=worker.name if worker else None,
     )
+    # 认证依赖只读查询会开启隐式事务，返回前清理掉，避免连接长期挂着事务状态。
     await db.rollback()
     return actor
 

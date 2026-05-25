@@ -3,12 +3,14 @@ import type {
   Bom,
   DefectReason,
   Material,
+  OperationSkillOption,
   Page,
   Routing,
   SimpleEntity,
   Team,
   WorkCenter,
   Worker,
+  WorkerOperationSkill,
 } from '../types/masterData'
 
 export type SimpleResource = 'materials' | 'workCenters' | 'teams' | 'workers' | 'defectReasons'
@@ -79,19 +81,44 @@ export type LookupData = {
   materials: Material[]
   workCenters: WorkCenter[]
   teams: Team[]
+  operationSkillOptions: OperationSkillOption[]
 }
 
 export async function loadLookups(): Promise<LookupData> {
-  const [materials, workCenters, teams] = await Promise.all([
+  const [materials, workCenters, teams, operationSkillOptions] = await Promise.all([
     listMaster('materials', { is_active: true, limit: 100, offset: 0 }),
     listMaster('workCenters', { is_active: true, limit: 100, offset: 0 }),
     listMaster('teams', { is_active: true, limit: 100, offset: 0 }),
+    apiRequest<OperationSkillOption[]>('/operation-skill-options'),
   ])
   return {
     materials: materials.items,
     workCenters: workCenters.items,
     teams: teams.items,
+    operationSkillOptions,
   }
 }
 
-export type { Bom, DefectReason, Material, Routing, SimpleEntity, Team, WorkCenter, Worker }
+export function getWorkerOperationSkills(workerId: string) {
+  return apiRequest<WorkerOperationSkill[]>(`/workers/${workerId}/operation-skills`)
+}
+
+export function updateWorkerOperationSkills(workerId: string, operationCodes: string[]) {
+  return apiRequest<WorkerOperationSkill[]>(`/workers/${workerId}/operation-skills`, {
+    method: 'PUT',
+    body: JSON.stringify({ operation_codes: operationCodes }),
+  })
+}
+
+export type {
+  Bom,
+  DefectReason,
+  Material,
+  OperationSkillOption,
+  Routing,
+  SimpleEntity,
+  Team,
+  WorkCenter,
+  Worker,
+  WorkerOperationSkill,
+}

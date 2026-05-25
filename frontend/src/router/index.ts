@@ -9,6 +9,16 @@ import WorkOrdersView from '../views/WorkOrdersView.vue'
 import { useAuthStore } from '../stores/auth'
 import type { UserRole } from '../types/auth'
 
+function defaultRouteForRole(role: UserRole) {
+  if (role === 'operator') {
+    return { name: 'shop-floor' }
+  }
+  if (role === 'inspector') {
+    return { name: 'quality' }
+  }
+  return { name: 'dashboard' }
+}
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -21,6 +31,7 @@ const router = createRouter({
       path: '/',
       name: 'dashboard',
       component: DashboardView,
+      meta: { roles: ['planner', 'admin'] },
     },
     {
       path: '/master-data',
@@ -55,7 +66,7 @@ router.beforeEach(async (to) => {
     await authStore.restore()
   }
   if (to.name === 'login') {
-    return authStore.isAuthenticated ? { name: 'dashboard' } : true
+    return authStore.isAuthenticated && authStore.user ? defaultRouteForRole(authStore.user.role) : true
   }
   if (!authStore.isAuthenticated) {
     return { name: 'login', query: { redirect: to.fullPath } }
@@ -63,7 +74,7 @@ router.beforeEach(async (to) => {
 
   const roles = to.meta.roles as UserRole[] | undefined
   if (roles?.length && authStore.user && !roles.includes(authStore.user.role)) {
-    return { name: 'dashboard' }
+    return defaultRouteForRole(authStore.user.role)
   }
   return true
 })

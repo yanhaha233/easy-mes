@@ -1,10 +1,13 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Actor, require_roles
 from app.db.session import get_db_session
+from app.models.master_data import DefectReason
+from app.schemas.master_data import DefectReasonRead
 from app.schemas.quality import QualityRecordCreate, QualityRecordRead
 from app.services.quality import create_quality_record, list_quality_records
 
@@ -18,6 +21,25 @@ def require_idempotency_key(idempotency_key: str | None) -> str:
             detail={"code": "IDEMPOTENCY_KEY_REQUIRED", "message": "缺少 Idempotency-Key 请求头"},
         )
     return idempotency_key
+
+
+@router.get("/quality/defect-reasons", response_model=list[DefectReasonRead])
+async def list_quality_defect_reasons(
+    db: AsyncSession = Depends(get_db_session),
+    actor: Actor = Depends(require_roles("operator", "inspector", "planner", "admin")),
+) -> list[DefectReason]:
+    records = list(
+        await db.scalars(
+            select(DefectReason)
+            .where(
+                DefectReason.tenant_id == actor.tenant_id,
+                DefectReason.deleted_at.is_(None),
+                DefectReason.is_active.is_(True),
+            )
+            .order_by(DefectReason.code)
+        )
+    )
+    return records
 
 
 @router.post("/quality/first-article", response_model=QualityRecordRead)

@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -58,6 +59,8 @@ class OperationRead(EntityRead):
     good_qty: Decimal
     bad_qty: Decimal
     status: OperationStatus
+    assigned_operator_code: str | None = None
+    assigned_operator_name: str | None = None
     started_at: datetime | None = None
     started_by_operator_code: str | None = None
     started_by_operator_name: str | None = None
@@ -68,3 +71,7 @@ class OperationClockRead(BaseModel):
     work_order_status: WorkOrderStatus
     next_operation_id: UUID | None = None
     clock_record_id: UUID
+    elapsed_seconds: int | None = None
+    time_anomaly: bool = False
+    time_anomaly_reason: str | None = None
+    time_anomaly_detail: dict[str, Any] | None = None

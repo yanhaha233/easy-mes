@@ -277,6 +277,15 @@
           <el-select v-else-if="field.kind === 'select'" v-model="simpleForm[field.prop]" clearable filterable>
             <el-option v-for="item in resolveOptions(field)" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
+          <el-select
+            v-else-if="field.kind === 'multi-select'"
+            v-model="simpleForm[field.prop]"
+            clearable
+            filterable
+            multiple
+          >
+            <el-option v-for="item in resolveOptions(field)" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
           <el-switch v-else v-model="simpleForm[field.prop]" active-text="启用" inactive-text="停用" />
         </el-form-item>
       </el-form>
@@ -426,9 +435,11 @@ import { ApiError } from '../api/client'
 import {
   createMaster,
   deleteMaster,
+  getWorkerOperationSkills,
   listMaster,
   loadLookups,
   updateMaster,
+  updateWorkerOperationSkills,
   type Bom,
   type DefectReason,
   type Material,
@@ -449,7 +460,7 @@ import {
 } from '../utils/labels'
 
 type Option = { label: string; value: string | boolean }
-type FieldKind = 'text' | 'textarea' | 'select' | 'switch'
+type FieldKind = 'text' | 'textarea' | 'select' | 'multi-select' | 'switch'
 type SimpleKey = SimpleResource
 type FormRecord = Record<string, unknown>
 
@@ -524,6 +535,7 @@ const lookups = reactive({
   materials: [] as Material[],
   workCenters: [] as WorkCenter[],
   teams: [] as Team[],
+  operationSkillOptions: [] as { operation_code: string; operation_name: string }[],
 })
 
 const materialTypeOptions = Object.entries(materialTypeLabels).map(([value, label]) => ({ value, label }))
@@ -539,6 +551,12 @@ const teamOptions = computed<Option[]>(() => [
 const materialOptions = computed(() => lookups.materials.map((item) => ({ label: `${item.code} ${item.name}`, value: item.id })))
 const workCenterOptions = computed(() =>
   lookups.workCenters.map((item) => ({ label: `${item.code} ${item.name}`, value: item.id })),
+)
+const operationSkillOptions = computed<Option[]>(() =>
+  lookups.operationSkillOptions.map((item) => ({
+    label: `${item.operation_code} ${item.operation_name}`,
+    value: item.operation_code,
+  })),
 )
 
 const simpleConfigs: Record<SimpleKey, SimpleConfig> = {
@@ -618,7 +636,7 @@ const simpleConfigs: Record<SimpleKey, SimpleConfig> = {
   workers: {
     key: 'workers',
     title: '人员',
-    description: '维护操作员、质检员和计划员。第一版不做登录，报工先走默认操作员。',
+    description: '维护操作员、质检员和计划员；操作员需要配置可做工序后才能被派工。',
     columns: [
       { label: '角色', format: (row) => workerTypeLabels[(row as Worker).worker_type] },
       { label: '班组', minWidth: 160, format: (row) => teamLabel((row as Worker).team_id) },
@@ -628,10 +646,19 @@ const simpleConfigs: Record<SimpleKey, SimpleConfig> = {
       { prop: 'name', label: '姓名', kind: 'text', required: true },
       { prop: 'worker_type', label: '角色', kind: 'select', required: true, options: workerTypeOptions },
       { prop: 'team_id', label: '班组', kind: 'select', options: () => teamOptions.value },
+      { prop: 'operation_skill_codes', label: '可做工序', kind: 'multi-select', options: () => operationSkillOptions.value },
       { prop: 'is_active', label: '状态', kind: 'switch' },
       { prop: 'remark', label: '备注', kind: 'textarea' },
     ],
-    defaults: () => ({ code: '', name: '', worker_type: 'operator', team_id: '', is_active: true, remark: '' }),
+    defaults: () => ({
+      code: '',
+      name: '',
+      worker_type: 'operator',
+      team_id: '',
+      operation_skill_codes: [],
+      is_active: true,
+      remark: '',
+    }),
     nullableFields: ['team_id', 'remark'],
   },
   defectReasons: {
@@ -773,6 +800,7 @@ async function refreshLookups() {
   lookups.materials = data.materials
   lookups.workCenters = data.workCenters
   lookups.teams = data.teams
+  lookups.operationSkillOptions = data.operationSkillOptions
 }
 
 async function refreshActive() {
@@ -826,13 +854,21 @@ function openSimpleCreate() {
   simpleDrawerOpen.value = true
 }
 
-function openSimpleEdit(row: SimpleEntity) {
+async function openSimpleEdit(row: SimpleEntity) {
   const config = currentSimpleConfig.value
   if (!config) {
     return
   }
   simpleEditingId.value = row.id
   simpleForm.value = { ...config.defaults(), ...row }
+  if (config.key === 'workers' && (row as Worker).worker_type === 'operator') {
+    try {
+      const skills = await getWorkerOperationSkills(row.id)
+      simpleForm.value.operation_skill_codes = skills.map((item) => item.operation_code)
+    } catch (error) {
+      showError(error)
+    }
+  }
   simpleDrawerOpen.value = true
 }
 
@@ -844,17 +880,29 @@ async function saveSimple() {
   saving.value = true
   try {
     const payload = normalizeNullable({ ...simpleForm.value }, config.nullableFields)
+    const operationSkillCodes = Array.isArray(payload.operation_skill_codes)
+      ? (payload.operation_skill_codes as string[])
+      : []
+    delete payload.operation_skill_codes
     delete payload.id
     delete payload.tenant_id
     delete payload.created_at
     delete payload.updated_at
     delete payload.deleted_at
+    const shouldSaveSkills = config.key === 'workers' && payload.worker_type === 'operator'
+    let saved: SimpleEntity
     if (simpleEditingId.value) {
       delete payload.code
-      await updateMaster(config.key, simpleEditingId.value, payload)
+      saved = await updateMaster(config.key, simpleEditingId.value, payload)
+      if (shouldSaveSkills) {
+        await updateWorkerOperationSkills(simpleEditingId.value, operationSkillCodes)
+      }
       ElMessage.success('已保存')
     } else {
-      await createMaster(config.key, payload)
+      saved = await createMaster(config.key, payload)
+      if (shouldSaveSkills) {
+        await updateWorkerOperationSkills(saved.id, operationSkillCodes)
+      }
       ElMessage.success('已新增')
     }
     simpleDrawerOpen.value = false

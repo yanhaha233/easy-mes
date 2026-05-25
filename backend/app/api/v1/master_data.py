@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +22,7 @@ from app.models.master_data import (
     Team,
     WorkCenter,
     Worker,
+    WorkerOperationSkill,
 )
 from app.schemas.master_data import (
     BomCreate,
@@ -31,6 +34,7 @@ from app.schemas.master_data import (
     MaterialCreate,
     MaterialRead,
     MaterialUpdate,
+    OperationSkillOptionRead,
     RoutingCreate,
     RoutingRead,
     RoutingUpdate,
@@ -41,6 +45,8 @@ from app.schemas.master_data import (
     WorkCenterRead,
     WorkCenterUpdate,
     WorkerCreate,
+    WorkerOperationSkillRead,
+    WorkerOperationSkillUpdate,
     WorkerRead,
     WorkerUpdate,
 )
@@ -122,6 +128,104 @@ def apply_update(entity: Any, payload: Any) -> None:
         setattr(entity, key, value)
 
 
+ENTITY_AUDIT_FIELDS: dict[type, tuple[str, ...]] = {
+    Material: ("code", "name", "spec", "unit", "material_type", "is_active", "allow_empty_bom", "remark"),
+    WorkCenter: ("code", "name", "work_center_type", "location", "is_active", "remark"),
+    Team: ("code", "name", "leader_name", "is_active", "remark"),
+    Worker: ("code", "name", "worker_type", "team_id", "is_active", "remark"),
+    DefectReason: ("code", "name", "category", "is_active", "remark"),
+}
+
+
+def encode_audit_value(value: Any) -> Any:
+    return jsonable_encoder(value, custom_encoder={Decimal: str, UUID: str})
+
+
+def entity_snapshot(entity: Any, fields: tuple[str, ...] | None = None) -> dict[str, Any]:
+    selected_fields = fields or ENTITY_AUDIT_FIELDS[type(entity)]
+    return {field: encode_audit_value(getattr(entity, field)) for field in selected_fields}
+
+
+def audit_create_detail(entity: Any, fields: tuple[str, ...] | None = None) -> dict[str, Any]:
+    return {"after": entity_snapshot(entity, fields)}
+
+
+def audit_delete_detail(entity: Any, deleted_at: datetime, fields: tuple[str, ...] | None = None) -> dict[str, Any]:
+    return {"before": entity_snapshot(entity, fields), "deleted_at": encode_audit_value(deleted_at)}
+
+
+def audit_update_detail(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    changes = {
+        key: {"from": before.get(key), "to": after.get(key)}
+        for key in sorted(set(before) | set(after))
+        if before.get(key) != after.get(key)
+    }
+    return {"before": before, "after": after, "changes": changes}
+
+
+def skill_snapshot(skills: list[WorkerOperationSkill]) -> list[dict[str, Any]]:
+    return [
+        {
+            "operation_code": skill.operation_code,
+            "operation_name": skill.operation_name_snapshot,
+            "is_active": skill.is_active,
+        }
+        for skill in sorted(skills, key=lambda item: item.operation_code)
+        if skill.deleted_at is None
+    ]
+
+
+async def active_operation_options(session: AsyncSession, tenant_id: UUID) -> dict[str, str]:
+    rows = list(
+        await session.scalars(
+            select(RoutingOperation).where(
+                RoutingOperation.tenant_id == tenant_id,
+                RoutingOperation.deleted_at.is_(None),
+                RoutingOperation.is_active.is_(True),
+            )
+        )
+    )
+    options: dict[str, str] = {}
+    for row in sorted(rows, key=lambda item: (item.operation_code, item.seq)):
+        options.setdefault(row.operation_code, row.operation_name)
+    return options
+
+
+def bom_snapshot(bom: Bom) -> dict[str, Any]:
+    return {
+        **entity_snapshot(bom, ("material_id", "version", "status", "remark")),
+        "lines": [
+            {
+                "component_material_id": encode_audit_value(line.component_material_id),
+                "line_no": line.line_no,
+                "qty_per": encode_audit_value(line.qty_per),
+                "loss_rate": encode_audit_value(line.loss_rate),
+                "remark": line.remark,
+            }
+            for line in sorted(bom.lines, key=lambda item: item.line_no)
+        ],
+    }
+
+
+def routing_snapshot(routing: Routing) -> dict[str, Any]:
+    return {
+        **entity_snapshot(routing, ("material_id", "version", "status", "remark")),
+        "operations": [
+            {
+                "seq": operation.seq,
+                "operation_code": operation.operation_code,
+                "operation_name": operation.operation_name,
+                "work_center_id": encode_audit_value(operation.work_center_id),
+                "setup_time_sec": operation.setup_time_sec,
+                "unit_time_sec": operation.unit_time_sec,
+                "is_active": operation.is_active,
+                "remark": operation.remark,
+            }
+            for operation in sorted(routing.operations, key=lambda item: item.seq)
+        ],
+    }
+
+
 @router.get("/materials", response_model=dict)
 async def list_materials(
     db: AsyncSession = Depends(get_db_session),
@@ -159,6 +263,7 @@ async def create_material(
         entity_type="material",
         entity_id=material.id,
         action="create",
+        detail=audit_create_detail(material),
     )
     await commit_with_integrity_handling(db, "物料编码已存在")
     await db.refresh(material)
@@ -182,7 +287,9 @@ async def update_material(
     actor: Actor = Depends(get_default_actor),
 ) -> Material:
     material = await get_entity(db, Material, material_id, actor)
+    before = entity_snapshot(material)
     apply_update(material, payload)
+    after = entity_snapshot(material)
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -190,6 +297,7 @@ async def update_material(
         entity_type="material",
         entity_id=material.id,
         action="update",
+        detail=audit_update_detail(before, after),
     )
     await commit_with_integrity_handling(db, "物料编码已存在")
     await db.refresh(material)
@@ -203,7 +311,9 @@ async def delete_material(
     actor: Actor = Depends(get_default_actor),
 ) -> None:
     material = await get_entity(db, Material, material_id, actor)
-    material.deleted_at = utcnow()
+    deleted_at = utcnow()
+    detail = audit_delete_detail(material, deleted_at)
+    material.deleted_at = deleted_at
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -211,6 +321,7 @@ async def delete_material(
         entity_type="material",
         entity_id=material.id,
         action="delete",
+        detail=detail,
     )
     await db.commit()
 
@@ -245,6 +356,7 @@ async def create_work_center(
         entity_type="work_center",
         entity_id=entity.id,
         action="create",
+        detail=audit_create_detail(entity),
     )
     await commit_with_integrity_handling(db, "工位编码已存在")
     await db.refresh(entity)
@@ -268,7 +380,9 @@ async def update_work_center(
     actor: Actor = Depends(get_default_actor),
 ) -> WorkCenter:
     entity = await get_entity(db, WorkCenter, work_center_id, actor)
+    before = entity_snapshot(entity)
     apply_update(entity, payload)
+    after = entity_snapshot(entity)
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -276,6 +390,7 @@ async def update_work_center(
         entity_type="work_center",
         entity_id=entity.id,
         action="update",
+        detail=audit_update_detail(before, after),
     )
     await commit_with_integrity_handling(db, "工位编码已存在")
     await db.refresh(entity)
@@ -289,7 +404,9 @@ async def delete_work_center(
     actor: Actor = Depends(get_default_actor),
 ) -> None:
     entity = await get_entity(db, WorkCenter, work_center_id, actor)
-    entity.deleted_at = utcnow()
+    deleted_at = utcnow()
+    detail = audit_delete_detail(entity, deleted_at)
+    entity.deleted_at = deleted_at
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -297,6 +414,7 @@ async def delete_work_center(
         entity_type="work_center",
         entity_id=entity.id,
         action="delete",
+        detail=detail,
     )
     await db.commit()
 
@@ -331,6 +449,7 @@ async def create_team(
         entity_type="team",
         entity_id=entity.id,
         action="create",
+        detail=audit_create_detail(entity),
     )
     await commit_with_integrity_handling(db, "班组编码已存在")
     await db.refresh(entity)
@@ -345,7 +464,9 @@ async def update_team(
     actor: Actor = Depends(get_default_actor),
 ) -> Team:
     entity = await get_entity(db, Team, team_id, actor)
+    before = entity_snapshot(entity)
     apply_update(entity, payload)
+    after = entity_snapshot(entity)
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -353,6 +474,7 @@ async def update_team(
         entity_type="team",
         entity_id=entity.id,
         action="update",
+        detail=audit_update_detail(before, after),
     )
     await commit_with_integrity_handling(db, "班组编码已存在")
     await db.refresh(entity)
@@ -375,7 +497,9 @@ async def delete_team(
     actor: Actor = Depends(get_default_actor),
 ) -> None:
     entity = await get_entity(db, Team, team_id, actor)
-    entity.deleted_at = utcnow()
+    deleted_at = utcnow()
+    detail = audit_delete_detail(entity, deleted_at)
+    entity.deleted_at = deleted_at
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -383,6 +507,7 @@ async def delete_team(
         entity_type="team",
         entity_id=entity.id,
         action="delete",
+        detail=detail,
     )
     await db.commit()
 
@@ -419,6 +544,7 @@ async def create_worker(
         entity_type="worker",
         entity_id=entity.id,
         action="create",
+        detail=audit_create_detail(entity),
     )
     await commit_with_integrity_handling(db, "人员编码已存在")
     await db.refresh(entity)
@@ -435,7 +561,9 @@ async def update_worker(
     entity = await get_entity(db, Worker, worker_id, actor)
     if payload.team_id:
         await ensure_exists(db, Team, payload.team_id, actor.tenant_id, "班组不存在")
+    before = entity_snapshot(entity)
     apply_update(entity, payload)
+    after = entity_snapshot(entity)
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -443,6 +571,7 @@ async def update_worker(
         entity_type="worker",
         entity_id=entity.id,
         action="update",
+        detail=audit_update_detail(before, after),
     )
     await commit_with_integrity_handling(db, "人员编码已存在")
     await db.refresh(entity)
@@ -458,6 +587,152 @@ async def get_worker(
     return await get_entity(db, Worker, worker_id, actor)
 
 
+@router.get("/operation-skill-options", response_model=list[OperationSkillOptionRead])
+async def list_operation_skill_options(
+    db: AsyncSession = Depends(get_db_session),
+    actor: Actor = Depends(get_default_actor),
+) -> list[dict[str, str]]:
+    options = await active_operation_options(db, actor.tenant_id)
+    return [
+        {"operation_code": operation_code, "operation_name": operation_name}
+        for operation_code, operation_name in sorted(options.items())
+    ]
+
+
+@router.get("/workers/{worker_id}/operation-skills", response_model=list[WorkerOperationSkillRead])
+async def list_worker_operation_skills(
+    worker_id: UUID,
+    db: AsyncSession = Depends(get_db_session),
+    actor: Actor = Depends(get_default_actor),
+) -> list[dict[str, Any]]:
+    worker = await get_entity(db, Worker, worker_id, actor)
+    rows = list(
+        await db.scalars(
+            select(WorkerOperationSkill)
+            .where(
+                WorkerOperationSkill.tenant_id == actor.tenant_id,
+                WorkerOperationSkill.worker_id == worker.id,
+                WorkerOperationSkill.deleted_at.is_(None),
+                WorkerOperationSkill.is_active.is_(True),
+            )
+            .order_by(WorkerOperationSkill.operation_code)
+        )
+    )
+    return [
+        WorkerOperationSkillRead(
+            id=row.id,
+            tenant_id=row.tenant_id,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            deleted_at=row.deleted_at,
+            worker_id=row.worker_id,
+            operation_code=row.operation_code,
+            operation_name=row.operation_name_snapshot,
+            is_active=row.is_active,
+            remark=row.remark,
+        ).model_dump(mode="json")
+        for row in rows
+    ]
+
+
+@router.put("/workers/{worker_id}/operation-skills", response_model=list[WorkerOperationSkillRead])
+async def update_worker_operation_skills(
+    worker_id: UUID,
+    payload: WorkerOperationSkillUpdate,
+    db: AsyncSession = Depends(get_db_session),
+    actor: Actor = Depends(get_default_actor),
+) -> list[dict[str, Any]]:
+    worker = await get_entity(db, Worker, worker_id, actor)
+    if worker.worker_type != "operator":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="只有操作员需要配置可做工序")
+
+    options = await active_operation_options(db, actor.tenant_id)
+    requested_codes = list(dict.fromkeys(item.strip() for item in payload.operation_codes if item.strip()))
+    unknown_codes = [code for code in requested_codes if code not in options]
+    if unknown_codes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "UNKNOWN_OPERATION_SKILL", "message": f"工序编码不存在: {', '.join(unknown_codes)}"},
+        )
+
+    existing = list(
+        await db.scalars(
+            select(WorkerOperationSkill)
+            .where(
+                WorkerOperationSkill.tenant_id == actor.tenant_id,
+                WorkerOperationSkill.worker_id == worker.id,
+                WorkerOperationSkill.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
+    )
+    before = skill_snapshot(existing)
+    existing_by_code = {item.operation_code: item for item in existing}
+    requested_set = set(requested_codes)
+
+    for code, skill in existing_by_code.items():
+        skill.is_active = code in requested_set
+        if code in options:
+            skill.operation_name_snapshot = options[code]
+
+    for code in requested_codes:
+        if code in existing_by_code:
+            continue
+        db.add(
+            WorkerOperationSkill(
+                tenant_id=actor.tenant_id,
+                worker_id=worker.id,
+                operation_code=code,
+                operation_name_snapshot=options[code],
+                is_active=True,
+            )
+        )
+
+    await db.flush()
+    updated = list(
+        await db.scalars(
+            select(WorkerOperationSkill)
+            .where(
+                WorkerOperationSkill.tenant_id == actor.tenant_id,
+                WorkerOperationSkill.worker_id == worker.id,
+                WorkerOperationSkill.deleted_at.is_(None),
+            )
+            .order_by(WorkerOperationSkill.operation_code)
+        )
+    )
+    after = skill_snapshot(updated)
+    await write_audit_log(
+        db,
+        tenant_id=actor.tenant_id,
+        actor_code=actor.code,
+        entity_type="worker_operation_skill",
+        entity_id=worker.id,
+        action="update",
+        detail={
+            "worker_code": worker.code,
+            "worker_name": worker.name,
+            **audit_update_detail({"skills": before}, {"skills": after}),
+        },
+    )
+    await db.commit()
+    return [
+        WorkerOperationSkillRead(
+            id=row.id,
+            tenant_id=row.tenant_id,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            deleted_at=row.deleted_at,
+            worker_id=row.worker_id,
+            operation_code=row.operation_code,
+            operation_name=row.operation_name_snapshot,
+            is_active=row.is_active,
+            remark=row.remark,
+        ).model_dump(mode="json")
+        for row in updated
+        if row.is_active
+    ]
+
+
 @router.delete("/workers/{worker_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_worker(
     worker_id: UUID,
@@ -465,7 +740,9 @@ async def delete_worker(
     actor: Actor = Depends(get_default_actor),
 ) -> None:
     entity = await get_entity(db, Worker, worker_id, actor)
-    entity.deleted_at = utcnow()
+    deleted_at = utcnow()
+    detail = audit_delete_detail(entity, deleted_at)
+    entity.deleted_at = deleted_at
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -473,6 +750,7 @@ async def delete_worker(
         entity_type="worker",
         entity_id=entity.id,
         action="delete",
+        detail=detail,
     )
     await db.commit()
 
@@ -514,6 +792,7 @@ async def create_defect_reason(
         entity_type="defect_reason",
         entity_id=entity.id,
         action="create",
+        detail=audit_create_detail(entity),
     )
     await commit_with_integrity_handling(db, "不良原因编码已存在")
     await db.refresh(entity)
@@ -528,7 +807,9 @@ async def update_defect_reason(
     actor: Actor = Depends(get_default_actor),
 ) -> DefectReason:
     entity = await get_entity(db, DefectReason, reason_id, actor)
+    before = entity_snapshot(entity)
     apply_update(entity, payload)
+    after = entity_snapshot(entity)
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -536,6 +817,7 @@ async def update_defect_reason(
         entity_type="defect_reason",
         entity_id=entity.id,
         action="update",
+        detail=audit_update_detail(before, after),
     )
     await commit_with_integrity_handling(db, "不良原因编码已存在")
     await db.refresh(entity)
@@ -558,7 +840,9 @@ async def delete_defect_reason(
     actor: Actor = Depends(get_default_actor),
 ) -> None:
     entity = await get_entity(db, DefectReason, reason_id, actor)
-    entity.deleted_at = utcnow()
+    deleted_at = utcnow()
+    detail = audit_delete_detail(entity, deleted_at)
+    entity.deleted_at = deleted_at
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -566,6 +850,7 @@ async def delete_defect_reason(
         entity_type="defect_reason",
         entity_id=entity.id,
         action="delete",
+        detail=detail,
     )
     await db.commit()
 
@@ -596,6 +881,7 @@ async def create_bom(
         entity_type="bom",
         entity_id=bom.id,
         action="create",
+        detail={"after": bom_snapshot(bom)},
     )
     await commit_with_integrity_handling(db, "该物料的 BOM 版本已存在")
     return await get_bom(bom.id, db, actor)
@@ -655,6 +941,7 @@ async def update_bom(
     actor: Actor = Depends(get_default_actor),
 ) -> Bom:
     bom = await get_bom(bom_id, db, actor)
+    before = bom_snapshot(bom)
     data = payload.model_dump(exclude_unset=True)
     lines = data.pop("lines", None)
     for key, value in data.items():
@@ -671,6 +958,7 @@ async def update_bom(
         entity_type="bom",
         entity_id=bom.id,
         action="update",
+        detail=audit_update_detail(before, bom_snapshot(bom)),
     )
     await commit_with_integrity_handling(db, "该物料的 BOM 版本已存在")
     return await get_bom(bom.id, db, actor)
@@ -683,7 +971,9 @@ async def delete_bom(
     actor: Actor = Depends(get_default_actor),
 ) -> None:
     bom = await get_bom(bom_id, db, actor)
-    bom.deleted_at = utcnow()
+    deleted_at = utcnow()
+    detail = {"before": bom_snapshot(bom), "deleted_at": encode_audit_value(deleted_at)}
+    bom.deleted_at = deleted_at
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -691,6 +981,7 @@ async def delete_bom(
         entity_type="bom",
         entity_id=bom.id,
         action="delete",
+        detail=detail,
     )
     await db.commit()
 
@@ -721,6 +1012,7 @@ async def create_routing(
         entity_type="routing",
         entity_id=routing.id,
         action="create",
+        detail={"after": routing_snapshot(routing)},
     )
     await commit_with_integrity_handling(db, "该物料的工艺路线版本已存在")
     return await get_routing(routing.id, db, actor)
@@ -780,6 +1072,7 @@ async def update_routing(
     actor: Actor = Depends(get_default_actor),
 ) -> Routing:
     routing = await get_routing(routing_id, db, actor)
+    before = routing_snapshot(routing)
     data = payload.model_dump(exclude_unset=True)
     operations = data.pop("operations", None)
     for key, value in data.items():
@@ -796,6 +1089,7 @@ async def update_routing(
         entity_type="routing",
         entity_id=routing.id,
         action="update",
+        detail=audit_update_detail(before, routing_snapshot(routing)),
     )
     await commit_with_integrity_handling(db, "该物料的工艺路线版本已存在")
     return await get_routing(routing.id, db, actor)
@@ -808,7 +1102,9 @@ async def delete_routing(
     actor: Actor = Depends(get_default_actor),
 ) -> None:
     routing = await get_routing(routing_id, db, actor)
-    routing.deleted_at = utcnow()
+    deleted_at = utcnow()
+    detail = {"before": routing_snapshot(routing), "deleted_at": encode_audit_value(deleted_at)}
+    routing.deleted_at = deleted_at
     await write_audit_log(
         db,
         tenant_id=actor.tenant_id,
@@ -816,5 +1112,6 @@ async def delete_routing(
         entity_type="routing",
         entity_id=routing.id,
         action="delete",
+        detail=detail,
     )
     await db.commit()

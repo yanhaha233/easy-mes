@@ -6,12 +6,14 @@ import type {
   WorkOrderCreatePayload,
   WorkOrderListItem,
   WorkOrderReceiptResponse,
+  WorkOrderSchedulePayload,
   WorkOrderTraceability,
 } from '../types/workOrder'
 
 export interface WorkOrderListParams {
   keyword?: string
   status?: string
+  operation_status?: string
   limit?: number
   offset?: number
 }
@@ -48,8 +50,11 @@ export async function cancelWorkOrder(workOrderNo: string, reason: string) {
   })
 }
 
-export async function scheduleWorkOrder(workOrderNo: string) {
-  return apiRequest<WorkOrder>(`/work-orders/${workOrderNo}/schedule`, { method: 'POST' })
+export async function scheduleWorkOrder(workOrderNo: string, payload: WorkOrderSchedulePayload) {
+  return apiRequest<WorkOrder>(`/work-orders/${workOrderNo}/schedule`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function receiveWorkOrder(workOrderNo: string, payload: ProductionReceiptCreatePayload) {

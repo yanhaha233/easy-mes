@@ -196,8 +196,22 @@ h2 {
 }
 
 .metric {
+  display: block;
   min-height: 110px;
   padding: 16px;
+}
+
+.metric-link {
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.metric-link:hover {
+  border-color: #91c7ba;
+  box-shadow: 0 10px 28px rgba(25, 107, 95, 0.12);
+  transform: translateY(-1px);
 }
 
 .metric span {
@@ -220,6 +234,63 @@ h2 {
 
 .sheet {
   padding: 16px;
+}
+
+.workbench-sheet {
+  margin-bottom: 14px;
+}
+
+.workbench-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.workbench-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 76px;
+  padding: 12px;
+  border: 1px solid #dfe6ee;
+  border-radius: 8px;
+  background: #f9fbfc;
+  color: #172026;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.workbench-card:hover {
+  border-color: #91c7ba;
+  background: #f1f8f5;
+}
+
+.workbench-card__main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.workbench-card__main strong,
+.workbench-card__main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-card__main span {
+  color: #657484;
+  font-size: 13px;
+}
+
+.workbench-card__main small {
+  color: #8a97a5;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .login-page {
@@ -489,6 +560,33 @@ h2 {
   font-weight: 700;
 }
 
+.schedule-lines {
+  display: grid;
+  gap: 10px;
+}
+
+.schedule-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 220px);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #dfe6ee;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.schedule-line strong,
+.schedule-line span {
+  display: block;
+}
+
+.schedule-line span {
+  margin-top: 2px;
+  color: #65717d;
+  font-size: 13px;
+}
+
 .el-drawer__footer {
   border-top: 1px solid #edf1f5;
 }
@@ -566,6 +664,10 @@ h2 {
 
   .sheet {
     padding: 14px;
+  }
+
+  .workbench-list {
+    grid-template-columns: 1fr;
   }
 
   .task-row {
@@ -922,6 +1024,10 @@ h2 {
   }
 
   .oee-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .schedule-line {
     grid-template-columns: minmax(0, 1fr);
   }
 

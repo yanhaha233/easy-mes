@@ -6,14 +6,14 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Actor
 from app.core.defaults import DEFAULT_OPERATOR_CODE, DEFAULT_PLANNER_CODE, DEFAULT_TENANT_ID
 from app.core.security import hash_password
 from app.db.session import AsyncSessionLocal, engine
-from app.models.auth import UserAccount
+from app.models.auth import RevokedToken, UserAccount
 from app.models.master_data import (
     Bom,
     BomLine,
@@ -24,406 +24,371 @@ from app.models.master_data import (
     Team,
     WorkCenter,
     Worker,
+    WorkerOperationSkill,
 )
-from app.models.production import WorkOrder
-from app.schemas.work_order import WorkOrderCreate
+from app.models.production import (
+    AuditLog,
+    ClockRecord,
+    DocumentSequence,
+    IdempotencyKey,
+    ProductionReceipt,
+    QualityRecord,
+    WorkOrder,
+    WorkOrderMaterial,
+    WorkOrderOperation,
+)
+from app.schemas.work_order import WorkOrderCreate, WorkOrderOperationAssignment, WorkOrderSchedule
 from app.services.work_order import confirm_work_order, create_work_order, schedule_work_order
 
 
-async def upsert_by_code(
-    session: AsyncSession,
-    model: type[Any],
-    code: str,
-    values: dict[str, Any],
-) -> Any:
-    entity = await session.scalar(select(model).where(model.tenant_id == DEFAULT_TENANT_ID, model.code == code))
-    if entity:
-        for key, value in values.items():
-            setattr(entity, key, value)
-        entity.deleted_at = None
-        return entity
-
-    entity = model(tenant_id=DEFAULT_TENANT_ID, code=code, **values)
-    session.add(entity)
-    await session.flush()
-    return entity
-
-
-async def upsert_user_account(
-    session: AsyncSession,
-    username: str,
-    password: str,
-    display_name: str,
-    role: str,
-    worker: Worker | None = None,
-) -> UserAccount:
-    user = await session.scalar(
-        select(UserAccount).where(UserAccount.tenant_id == DEFAULT_TENANT_ID, UserAccount.username == username)
+def planner_actor() -> Actor:
+    return Actor(
+        tenant_id=DEFAULT_TENANT_ID,
+        code="planner",
+        role="planner",
+        display_name="Planner",
+        worker_code=DEFAULT_PLANNER_CODE,
+        worker_name="Default Planner",
     )
-    values = {
-        "display_name": display_name,
-        "role": role,
-        "password_hash": hash_password(password),
-        "worker_id": worker.id if worker else None,
-        "is_active": True,
-        "remark": "演示账号",
-        "deleted_at": None,
-    }
-    if user:
-        for key, value in values.items():
-            setattr(user, key, value)
-        return user
-
-    user = UserAccount(tenant_id=DEFAULT_TENANT_ID, username=username, **values)
-    session.add(user)
-    await session.flush()
-    return user
 
 
-async def upsert_demo_bom(
-    session: AsyncSession,
-    product: Material,
-    steel: Material,
-    bearing: Material,
-    box: Material,
-) -> Bom:
-    bom = await session.scalar(
-        select(Bom).where(Bom.tenant_id == DEFAULT_TENANT_ID, Bom.material_id == product.id, Bom.version == "V1")
+async def clear_default_tenant(session: AsyncSession) -> None:
+    models = [
+        IdempotencyKey,
+        AuditLog,
+        QualityRecord,
+        ProductionReceipt,
+        ClockRecord,
+        RevokedToken,
+        WorkOrderMaterial,
+        WorkOrderOperation,
+        WorkOrder,
+        RoutingOperation,
+        Routing,
+        BomLine,
+        Bom,
+        UserAccount,
+        WorkerOperationSkill,
+        Worker,
+        DefectReason,
+        Team,
+        WorkCenter,
+        Material,
+        DocumentSequence,
+    ]
+    for model in models:
+        await session.execute(delete(model).where(model.tenant_id == DEFAULT_TENANT_ID))
+
+
+def build_user(username: str, password: str, display_name: str, role: str, worker: Worker | None) -> UserAccount:
+    return UserAccount(
+        tenant_id=DEFAULT_TENANT_ID,
+        username=username,
+        display_name=display_name,
+        role=role,
+        password_hash=hash_password(password),
+        worker_id=worker.id if worker else None,
+        is_active=True,
+        remark="MVP seed account",
     )
-    if not bom:
-        bom = Bom(tenant_id=DEFAULT_TENANT_ID, material_id=product.id, version="V1")
-        session.add(bom)
-        await session.flush()
 
-    bom.status = "active"
-    bom.remark = "演示 BOM：单层展开，适合主流程验收"
-    bom.deleted_at = None
-    await session.execute(delete(BomLine).where(BomLine.bom_id == bom.id))
+
+async def seed_master_data(session: AsyncSession) -> dict[str, Any]:
+    product = Material(
+        tenant_id=DEFAULT_TENANT_ID,
+        code="P-MVP-001",
+        name="MVP Product",
+        spec="STD",
+        unit="pcs",
+        material_type="product",
+        is_active=True,
+        allow_empty_bom=False,
+        remark="Seed product for the end-to-end MES flow.",
+    )
+    raw = Material(
+        tenant_id=DEFAULT_TENANT_ID,
+        code="M-MVP-RAW",
+        name="MVP Raw Material",
+        spec="RAW",
+        unit="kg",
+        material_type="raw_material",
+        is_active=True,
+        allow_empty_bom=False,
+        remark="Seed raw material.",
+    )
+    session.add_all([product, raw])
+    await session.flush()
+
+    machining = WorkCenter(
+        tenant_id=DEFAULT_TENANT_ID,
+        code="WC-MACH-01",
+        name="Machining Station",
+        work_center_type="equipment",
+        location="Line 1",
+        is_active=True,
+        remark="Seed machining work center.",
+    )
+    inspection = WorkCenter(
+        tenant_id=DEFAULT_TENANT_ID,
+        code="WC-QC-01",
+        name="Inspection Station",
+        work_center_type="inspection",
+        location="Line 1",
+        is_active=True,
+        remark="Seed inspection work center.",
+    )
+    session.add_all([machining, inspection])
+    await session.flush()
+
+    team = Team(
+        tenant_id=DEFAULT_TENANT_ID,
+        code="TEAM-MVP",
+        name="MVP Team",
+        leader_name="Team Lead",
+        is_active=True,
+        remark="Seed team.",
+    )
+    session.add(team)
+    await session.flush()
+
+    planner = Worker(
+        tenant_id=DEFAULT_TENANT_ID,
+        code=DEFAULT_PLANNER_CODE,
+        name="Default Planner",
+        worker_type="planner",
+        team_id=team.id,
+        is_active=True,
+        remark="Linked to planner account.",
+    )
+    operator = Worker(
+        tenant_id=DEFAULT_TENANT_ID,
+        code=DEFAULT_OPERATOR_CODE,
+        name="Default Operator",
+        worker_type="operator",
+        team_id=team.id,
+        is_active=True,
+        remark="Linked to operator account.",
+    )
+    operator_two = Worker(
+        tenant_id=DEFAULT_TENANT_ID,
+        code="OP-002",
+        name="Operator Two",
+        worker_type="operator",
+        team_id=team.id,
+        is_active=True,
+        remark="Used to verify task assignment isolation.",
+    )
+    inspector = Worker(
+        tenant_id=DEFAULT_TENANT_ID,
+        code="QC-001",
+        name="Default Inspector",
+        worker_type="inspector",
+        team_id=team.id,
+        is_active=True,
+        remark="Linked to inspector account.",
+    )
+    session.add_all([planner, operator, operator_two, inspector])
+    await session.flush()
+
     session.add_all(
         [
-            BomLine(
-                tenant_id=DEFAULT_TENANT_ID,
-                bom_id=bom.id,
-                component_material_id=steel.id,
-                line_no=10,
-                qty_per=Decimal("1.200000"),
-                loss_rate=Decimal("0.020000"),
-                remark="主材",
-            ),
-            BomLine(
-                tenant_id=DEFAULT_TENANT_ID,
-                bom_id=bom.id,
-                component_material_id=bearing.id,
-                line_no=20,
-                qty_per=Decimal("2.000000"),
-                loss_rate=Decimal("0"),
-                remark="标准件",
-            ),
-            BomLine(
-                tenant_id=DEFAULT_TENANT_ID,
-                bom_id=bom.id,
-                component_material_id=box.id,
-                line_no=30,
-                qty_per=Decimal("1.000000"),
-                loss_rate=Decimal("0"),
-                remark="完工包装",
-            ),
+            build_user("admin", "admin123", "Admin", "admin", None),
+            build_user("planner", "planner123", "Planner", "planner", planner),
+            build_user("operator", "operator123", "Default Operator", "operator", operator),
+            build_user("operator2", "operator123", "Operator Two", "operator", operator_two),
+            build_user("inspector", "inspector123", "Inspector", "inspector", inspector),
         ]
     )
-    return bom
 
+    defect_reason = DefectReason(
+        tenant_id=DEFAULT_TENANT_ID,
+        code="D-MVP-NG",
+        name="MVP Defect",
+        category="general",
+        is_active=True,
+        remark="Minimal defect reason for reporting validation.",
+    )
+    session.add(defect_reason)
 
-async def upsert_demo_routing(
-    session: AsyncSession,
-    product: Material,
-    cnc: WorkCenter,
-    deburr: WorkCenter,
-    qc: WorkCenter,
-) -> Routing:
-    routing = await session.scalar(
-        select(Routing).where(
-            Routing.tenant_id == DEFAULT_TENANT_ID,
-            Routing.material_id == product.id,
-            Routing.version == "V1",
+    bom = Bom(
+        tenant_id=DEFAULT_TENANT_ID,
+        material_id=product.id,
+        version="V1",
+        status="active",
+        remark="Minimal one-level BOM.",
+    )
+    bom.lines.append(
+        BomLine(
+            tenant_id=DEFAULT_TENANT_ID,
+            component_material_id=raw.id,
+            line_no=10,
+            qty_per=Decimal("1.000000"),
+            loss_rate=Decimal("0"),
+            remark="One unit raw material per finished product.",
         )
     )
-    if not routing:
-        routing = Routing(tenant_id=DEFAULT_TENANT_ID, material_id=product.id, version="V1")
-        session.add(routing)
-        await session.flush()
+    session.add(bom)
 
-    routing.status = "active"
-    routing.remark = "演示工艺：CNC 加工 -> 去毛刺 -> 终检"
-    routing.deleted_at = None
-    await session.execute(delete(RoutingOperation).where(RoutingOperation.routing_id == routing.id))
-    session.add_all(
+    routing = Routing(
+        tenant_id=DEFAULT_TENANT_ID,
+        material_id=product.id,
+        version="V1",
+        status="active",
+        remark="Minimal route: process then inspect.",
+    )
+    routing.operations.extend(
         [
             RoutingOperation(
                 tenant_id=DEFAULT_TENANT_ID,
-                routing_id=routing.id,
                 seq=10,
-                operation_code="OP-CNC",
-                operation_name="CNC 加工",
-                work_center_id=cnc.id,
-                setup_time_sec=600,
-                unit_time_sec=180,
-            ),
-            RoutingOperation(
-                tenant_id=DEFAULT_TENANT_ID,
-                routing_id=routing.id,
-                seq=20,
-                operation_code="OP-DEBURR",
-                operation_name="去毛刺",
-                work_center_id=deburr.id,
-                setup_time_sec=120,
-                unit_time_sec=60,
-            ),
-            RoutingOperation(
-                tenant_id=DEFAULT_TENANT_ID,
-                routing_id=routing.id,
-                seq=30,
-                operation_code="OP-QC",
-                operation_name="终检",
-                work_center_id=qc.id,
-                setup_time_sec=60,
+                operation_code="OP-10",
+                operation_name="Process",
+                work_center_id=machining.id,
+                setup_time_sec=0,
                 unit_time_sec=30,
+                is_active=True,
+                remark="First operation.",
+            ),
+            RoutingOperation(
+                tenant_id=DEFAULT_TENANT_ID,
+                seq=20,
+                operation_code="OP-20",
+                operation_name="Final Inspect",
+                work_center_id=inspection.id,
+                setup_time_sec=0,
+                unit_time_sec=10,
+                is_active=True,
+                remark="Second operation.",
             ),
         ]
     )
-    return routing
-
-
-async def seed_master_data(session: AsyncSession) -> None:
-    async with session.begin():
-        product = await upsert_by_code(
-            session,
-            Material,
-            "P-AXLE-001",
-            {
-                "name": "电机轴组件",
-                "spec": "EA-100",
-                "unit": "pcs",
-                "material_type": "product",
-                "is_active": True,
-                "allow_empty_bom": False,
-                "remark": "演示成品",
-            },
-        )
-        steel = await upsert_by_code(
-            session,
-            Material,
-            "M-STEEL-001",
-            {
-                "name": "45# 圆钢",
-                "spec": "D25",
-                "unit": "kg",
-                "material_type": "raw_material",
-                "is_active": True,
-                "allow_empty_bom": False,
-                "remark": "演示主材",
-            },
-        )
-        bearing = await upsert_by_code(
-            session,
-            Material,
-            "M-BEARING-001",
-            {
-                "name": "轴承",
-                "spec": "6203",
-                "unit": "pcs",
-                "material_type": "raw_material",
-                "is_active": True,
-                "allow_empty_bom": False,
-                "remark": "演示标准件",
-            },
-        )
-        box = await upsert_by_code(
-            session,
-            Material,
-            "PCK-BOX-001",
-            {
-                "name": "包装纸箱",
-                "spec": "A4",
-                "unit": "pcs",
-                "material_type": "packing",
-                "is_active": True,
-                "allow_empty_bom": False,
-                "remark": "演示包装材料",
-            },
-        )
-        cnc = await upsert_by_code(
-            session,
-            WorkCenter,
-            "WC-CNC-01",
-            {
-                "name": "CNC 一号机",
-                "work_center_type": "equipment",
-                "location": "一车间",
-                "is_active": True,
-                "remark": "演示加工设备",
-            },
-        )
-        deburr = await upsert_by_code(
-            session,
-            WorkCenter,
-            "WC-DEBURR-01",
-            {
-                "name": "去毛刺工位",
-                "work_center_type": "workstation",
-                "location": "一车间",
-                "is_active": True,
-                "remark": "演示人工工位",
-            },
-        )
-        qc = await upsert_by_code(
-            session,
-            WorkCenter,
-            "WC-QC-01",
-            {
-                "name": "质检工位",
-                "work_center_type": "inspection",
-                "location": "一车间",
-                "is_active": True,
-                "remark": "演示质量工位",
-            },
-        )
-        team = await upsert_by_code(
-            session,
-            Team,
-            "TEAM-A",
-            {
-                "name": "A 班",
-                "leader_name": "王班长",
-                "is_active": True,
-                "remark": "演示班组",
-            },
-        )
-        planner = await upsert_by_code(
-            session,
-            Worker,
-            DEFAULT_PLANNER_CODE,
-            {
-                "name": "默认计划员",
-                "worker_type": "planner",
-                "team_id": team.id,
-                "is_active": True,
-                "remark": "系统默认计划员",
-            },
-        )
-        operator = await upsert_by_code(
-            session,
-            Worker,
-            DEFAULT_OPERATOR_CODE,
-            {
-                "name": "默认操作员",
-                "worker_type": "operator",
-                "team_id": team.id,
-                "is_active": True,
-                "remark": "系统默认车间操作员",
-            },
-        )
-        inspector = await upsert_by_code(
-            session,
-            Worker,
-            "QC-001",
-            {
-                "name": "默认质检员",
-                "worker_type": "inspector",
-                "team_id": team.id,
-                "is_active": True,
-                "remark": "系统默认质检员",
-            },
-        )
-        await upsert_user_account(session, "planner", "planner123", "默认计划员", "planner", planner)
-        await upsert_user_account(session, "operator", "operator123", "默认操作员", "operator", operator)
-        await upsert_user_account(session, "inspector", "inspector123", "默认质检员", "inspector", inspector)
-        await upsert_user_account(session, "admin", "admin123", "系统管理员", "admin", None)
-        for code, name, category in [
-            ("D-SCRATCH", "划伤", "外观"),
-            ("D-DIMENSION", "尺寸超差", "尺寸"),
-            ("D-BURR", "毛刺残留", "外观"),
-        ]:
-            await upsert_by_code(
-                session,
-                DefectReason,
-                code,
-                {
-                    "name": name,
-                    "category": category,
-                    "is_active": True,
-                    "remark": "演示不良原因",
-                },
-            )
-        await upsert_demo_bom(session, product, steel, bearing, box)
-        await upsert_demo_routing(session, product, cnc, deburr, qc)
-
-
-async def ensure_demo_work_order(session: AsyncSession) -> tuple[str, str]:
-    actor = Actor(tenant_id=DEFAULT_TENANT_ID, code=DEFAULT_PLANNER_CODE)
-    existing = await session.scalar(
-        select(WorkOrder)
-        .where(
-            WorkOrder.tenant_id == DEFAULT_TENANT_ID,
-            WorkOrder.external_ref == "DEMO-SO-001",
-            WorkOrder.deleted_at.is_(None),
-        )
-        .order_by(WorkOrder.created_at.desc())
-    )
-    if not existing:
-        await session.rollback()
-        response = await create_work_order(
-            session,
-            WorkOrderCreate(
-                material_code="P-AXLE-001",
-                quantity=Decimal("20"),
-                due_date=date(2026, 6, 1),
-                priority="high",
-                source="manual",
-                external_ref="DEMO-SO-001",
-                customer_name="演示客户",
-                remark="种子脚本创建的演示工单",
+    session.add(routing)
+    session.add_all(
+        [
+            WorkerOperationSkill(
+                tenant_id=DEFAULT_TENANT_ID,
+                worker_id=operator.id,
+                operation_code="OP-10",
+                operation_name_snapshot="Process",
+                is_active=True,
+                remark="Default operator can process.",
             ),
-            actor,
-            "seed-demo-work-order-v1",
-        )
-        work_order_no = response["work_order_no"]
-        await confirm_work_order(session, work_order_no, actor)
-        await schedule_work_order(session, work_order_no, actor)
-        return work_order_no, "created"
+            WorkerOperationSkill(
+                tenant_id=DEFAULT_TENANT_ID,
+                worker_id=operator.id,
+                operation_code="OP-20",
+                operation_name_snapshot="Final Inspect",
+                is_active=True,
+                remark="Default operator can inspect in MVP demo.",
+            ),
+            WorkerOperationSkill(
+                tenant_id=DEFAULT_TENANT_ID,
+                worker_id=operator_two.id,
+                operation_code="OP-10",
+                operation_name_snapshot="Process",
+                is_active=True,
+                remark="Operator two can only run OP-10 in the MVP demo.",
+            ),
+        ]
+    )
 
-    work_order_no = existing.work_order_no
-    existing_status = existing.status
-    await session.rollback()
-    if existing_status == "draft":
-        confirmed = await confirm_work_order(session, work_order_no, actor)
-        existing_status = confirmed["status"]
-    if existing_status == "pending":
-        await schedule_work_order(session, work_order_no, actor)
-        return work_order_no, "scheduled"
-    return work_order_no, "existing"
+    return {
+        "product": product,
+        "raw": raw,
+        "operator": operator,
+        "operator_two": operator_two,
+        "inspector": inspector,
+    }
 
 
-async def run(skip_work_order: bool) -> None:
+async def create_scheduled_work_order(
+    session: AsyncSession,
+    *,
+    external_ref: str,
+    quantity: Decimal,
+    operator_code: str | None = None,
+    operation_assignments: list[WorkOrderOperationAssignment] | None = None,
+) -> str:
+    actor = planner_actor()
+    created = await create_work_order(
+        session,
+        WorkOrderCreate(
+            material_code="P-MVP-001",
+            quantity=quantity,
+            due_date=date(2026, 6, 1),
+            priority="high",
+            source="manual",
+            external_ref=external_ref,
+            customer_name="MVP Customer",
+            remark="Created by the minimal MVP seed.",
+        ),
+        actor,
+        f"seed-{external_ref}-create",
+    )
+    work_order_no = created["work_order_no"]
+    await confirm_work_order(session, work_order_no, actor)
+    await schedule_work_order(
+        session,
+        work_order_no,
+        actor,
+        WorkOrderSchedule(operator_code=operator_code, operation_assignments=operation_assignments or []),
+    )
+    return work_order_no
+
+
+async def seed_work_orders() -> list[str]:
     async with AsyncSessionLocal() as session:
-        await seed_master_data(session)
+        first = await create_scheduled_work_order(
+            session,
+            external_ref="SEED-MVP-001",
+            quantity=Decimal("5"),
+            operator_code=DEFAULT_OPERATOR_CODE,
+        )
+        second = await create_scheduled_work_order(
+            session,
+            external_ref="SEED-MVP-002",
+            quantity=Decimal("3"),
+            operation_assignments=[
+                WorkOrderOperationAssignment(operation_seq=10, operator_code="OP-002"),
+                WorkOrderOperationAssignment(operation_seq=20, operator_code=DEFAULT_OPERATOR_CODE),
+            ],
+        )
+        return [first, second]
 
-    work_order_result: tuple[str, str] | None = None
-    if not skip_work_order:
-        async with AsyncSessionLocal() as session:
-            work_order_result = await ensure_demo_work_order(session)
 
-    print("Demo master data is ready.")
-    if work_order_result:
-        work_order_no, status = work_order_result
-        print(f"Demo work order {work_order_no} is {status}.")
+async def run(skip_work_orders: bool) -> None:
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            await clear_default_tenant(session)
+            await seed_master_data(session)
+
+    work_order_nos: list[str] = []
+    if not skip_work_orders:
+        work_order_nos = await seed_work_orders()
+
+    print("Minimal MVP seed is ready.")
+    print("Accounts:")
+    print("  admin / admin123")
+    print("  planner / planner123")
+    print("  operator / operator123")
+    print("  operator2 / operator123")
+    print("  inspector / inspector123")
+    print("Master data:")
+    print("  product=P-MVP-001, raw=M-MVP-RAW, route=OP-10 -> OP-20")
+    if work_order_nos:
+        print("Scheduled work orders:")
+        print(f"  {work_order_nos[0]} assigned to {DEFAULT_OPERATOR_CODE}")
+        print(f"  {work_order_nos[1]} OP-10 assigned to OP-002, OP-20 assigned to {DEFAULT_OPERATOR_CODE}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Seed Easy MES demo master data.")
+    parser = argparse.ArgumentParser(description="Reset and seed a minimal Easy MES MVP dataset.")
     parser.add_argument(
+        "--skip-work-orders",
         "--skip-work-order",
         action="store_true",
-        help="Only seed master data, without creating or scheduling the demo work order.",
+        dest="skip_work_orders",
+        help="Only seed users and master data, without creating scheduled work orders.",
     )
     return parser.parse_args()
 
@@ -431,7 +396,7 @@ def parse_args() -> argparse.Namespace:
 async def async_main() -> None:
     args = parse_args()
     try:
-        await run(skip_work_order=args.skip_work_order)
+        await run(skip_work_orders=args.skip_work_orders)
     finally:
         await engine.dispose()
 

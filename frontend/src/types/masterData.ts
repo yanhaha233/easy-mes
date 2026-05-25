@@ -55,6 +55,19 @@ export interface Worker extends EntityRead {
   remark: string | null
 }
 
+export interface OperationSkillOption {
+  operation_code: string
+  operation_name: string
+}
+
+export interface WorkerOperationSkill extends EntityRead {
+  worker_id: UUID
+  operation_code: string
+  operation_name: string | null
+  is_active: boolean
+  remark: string | null
+}
+
 export interface DefectReason extends EntityRead {
   code: string
   name: string

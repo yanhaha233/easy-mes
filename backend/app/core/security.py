@@ -7,11 +7,16 @@ import json
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from app.core.config import settings
 
 PASSWORD_HASH_NAME = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 120_000
+
+
+def auth_secret_bytes() -> bytes:
+    return settings.auth_secret_key.get_secret_value().encode("utf-8")
 
 
 def base64url_encode(raw: bytes) -> str:
@@ -45,18 +50,21 @@ def sign_token(header: dict[str, Any], payload: dict[str, Any]) -> str:
     header_part = base64url_encode(json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     payload_part = base64url_encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     signing_input = f"{header_part}.{payload_part}".encode("ascii")
-    signature = hmac.new(settings.auth_secret_key.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    signature = hmac.new(auth_secret_bytes(), signing_input, hashlib.sha256).digest()
     return f"{header_part}.{payload_part}.{base64url_encode(signature)}"
 
 
 def create_access_token(*, subject: str, role: str, tenant_id: str) -> tuple[str, datetime]:
-    expires_at = datetime.now(UTC) + timedelta(minutes=settings.access_token_expire_minutes)
+    issued_at = datetime.now(UTC)
+    expires_at = issued_at + timedelta(minutes=settings.access_token_expire_minutes)
     token = sign_token(
         {"alg": "HS256", "typ": "JWT"},
         {
             "sub": subject,
             "role": role,
             "tenant_id": tenant_id,
+            "jti": uuid4().hex,
+            "iat": int(issued_at.timestamp()),
             "exp": int(expires_at.timestamp()),
         },
     )
@@ -70,7 +78,7 @@ def decode_access_token(token: str) -> dict[str, Any]:
         raise ValueError("Invalid token format") from exc
 
     signing_input = f"{header_part}.{payload_part}".encode("ascii")
-    expected_signature = hmac.new(settings.auth_secret_key.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    expected_signature = hmac.new(auth_secret_bytes(), signing_input, hashlib.sha256).digest()
     if not hmac.compare_digest(base64url_encode(expected_signature), signature_part):
         raise ValueError("Invalid token signature")
 

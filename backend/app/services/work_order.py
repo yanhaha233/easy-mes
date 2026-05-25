@@ -15,7 +15,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import Actor
-from app.models.master_data import Bom, BomLine, Material, Routing, RoutingOperation, WorkCenter
+from app.core.defaults import DEFAULT_OPERATOR_CODE
+from app.models.auth import UserAccount
+from app.models.master_data import (
+    Bom,
+    BomLine,
+    Material,
+    Routing,
+    RoutingOperation,
+    WorkCenter,
+    Worker,
+    WorkerOperationSkill,
+)
 from app.models.production import (
     AuditLog,
     ClockRecord,
@@ -27,14 +38,23 @@ from app.models.production import (
     WorkOrderMaterial,
     WorkOrderOperation,
 )
-from app.schemas.work_order import ProductionReceiptCreate, WorkOrderCancel, WorkOrderCreate, WorkOrderRead
+from app.schemas.work_order import (
+    ProductionReceiptCreate,
+    WorkOrderCancel,
+    WorkOrderCreate,
+    WorkOrderRead,
+    WorkOrderSchedule,
+)
 from app.services.audit import write_audit_log
 
 PRODUCIBLE_MATERIAL_TYPES = {"product", "semi_finished"}
 
 
-def business_error(http_status: int, code: str, message: str) -> None:
-    raise HTTPException(status_code=http_status, detail={"code": code, "message": message})
+def business_error(http_status: int, code: str, message: str, detail: dict[str, Any] | None = None) -> None:
+    error_detail: dict[str, Any] = {"code": code, "message": message}
+    if detail:
+        error_detail.update(detail)
+    raise HTTPException(status_code=http_status, detail=error_detail)
 
 
 def utcnow() -> datetime:
@@ -256,6 +276,70 @@ def build_operation_rows(work_order: WorkOrder, routing: Routing, planned_qty: D
     return rows
 
 
+async def load_schedule_operator(session: AsyncSession, tenant_id: UUID, operator_code: str | None) -> Worker:
+    code = operator_code or DEFAULT_OPERATOR_CODE
+    worker = await session.scalar(
+        select(Worker).where(
+            Worker.tenant_id == tenant_id,
+            Worker.code == code,
+            Worker.deleted_at.is_(None),
+            Worker.is_active.is_(True),
+        )
+    )
+    if not worker:
+        business_error(status.HTTP_400_BAD_REQUEST, "OPERATOR_NOT_FOUND", f"操作员 {code} 不存在或已停用")
+    if worker.worker_type != "operator":
+        business_error(status.HTTP_400_BAD_REQUEST, "WORKER_NOT_OPERATOR", f"{code} 不是操作员")
+    return worker
+
+
+async def worker_operation_skill_codes(session: AsyncSession, worker: Worker) -> set[str]:
+    rows = await session.scalars(
+        select(WorkerOperationSkill.operation_code).where(
+            WorkerOperationSkill.tenant_id == worker.tenant_id,
+            WorkerOperationSkill.worker_id == worker.id,
+            WorkerOperationSkill.deleted_at.is_(None),
+            WorkerOperationSkill.is_active.is_(True),
+        )
+    )
+    return set(rows)
+
+
+async def ensure_worker_can_run_operations(
+    session: AsyncSession,
+    worker: Worker,
+    operations: list[WorkOrderOperation],
+) -> None:
+    skill_codes = await worker_operation_skill_codes(session, worker)
+    missing_operations = [
+        operation for operation in operations if operation.operation_code_snapshot not in skill_codes
+    ]
+    if missing_operations:
+        business_error(
+            status.HTTP_400_BAD_REQUEST,
+            "OPERATOR_OPERATION_SKILL_MISSING",
+            f"操作员 {worker.code} 不具备部分工序权限",
+            {
+                "operator_code": worker.code,
+                "operator_name": worker.name,
+                "operations": [
+                    {
+                        "operation_seq": operation.seq,
+                        "operation_code": operation.operation_code_snapshot,
+                        "operation_name": operation.operation_name_snapshot,
+                    }
+                    for operation in missing_operations
+                ],
+            },
+        )
+
+
+def assign_operation_to_worker(operation: WorkOrderOperation, worker: Worker) -> None:
+    operation.assigned_operator_id = worker.id
+    operation.assigned_operator_code = worker.code
+    operation.assigned_operator_name = worker.name
+
+
 def serialize_work_order(work_order: WorkOrder) -> dict[str, Any]:
     materials = sorted(work_order.materials, key=lambda item: item.component_code_snapshot)
     operations = sorted(work_order.operations, key=lambda item: item.seq)
@@ -334,6 +418,8 @@ def serialize_work_order(work_order: WorkOrder) -> dict[str, Any]:
                 "good_qty": row.good_qty,
                 "bad_qty": row.bad_qty,
                 "status": row.status,
+                "assigned_operator_code": row.assigned_operator_code,
+                "assigned_operator_name": row.assigned_operator_name,
                 "started_at": row.started_at,
                 "started_by_operator_code": row.started_by_operator_code,
                 "started_by_operator_name": row.started_by_operator_name,
@@ -483,7 +569,13 @@ async def confirm_work_order(session: AsyncSession, work_order_no: str, actor: A
         return serialize_work_order(work_order)
 
 
-async def schedule_work_order(session: AsyncSession, work_order_no: str, actor: Actor) -> dict[str, Any]:
+async def schedule_work_order(
+    session: AsyncSession,
+    work_order_no: str,
+    actor: Actor,
+    payload: WorkOrderSchedule | None = None,
+) -> dict[str, Any]:
+    payload = payload or WorkOrderSchedule()
     async with session.begin():
         work_order = await load_work_order_by_no(session, work_order_no, actor, lock=True)
         if work_order.status != "pending":
@@ -496,6 +588,43 @@ async def schedule_work_order(session: AsyncSession, work_order_no: str, actor: 
         first_pending = next((item for item in operations if item.status == "pending"), None)
         if not first_pending:
             business_error(status.HTTP_400_BAD_REQUEST, "NO_PENDING_OPERATION", "没有可派工的待处理工序")
+        assignment_by_seq = {item.operation_seq: item.operator_code for item in payload.operation_assignments}
+        unknown_assignment_seqs = [seq for seq in assignment_by_seq if seq not in {item.seq for item in operations}]
+        if unknown_assignment_seqs:
+            business_error(
+                status.HTTP_400_BAD_REQUEST,
+                "UNKNOWN_OPERATION_ASSIGNMENT",
+                f"派工工序不存在: {', '.join(str(seq) for seq in sorted(unknown_assignment_seqs))}",
+            )
+        pending_operations = [operation for operation in operations if operation.status == "pending"]
+        needs_default_operator = any(operation.seq not in assignment_by_seq for operation in pending_operations)
+        default_operator = (
+            await load_schedule_operator(session, actor.tenant_id, payload.operator_code)
+            if needs_default_operator
+            else None
+        )
+        operator_cache: dict[str, Worker] = {default_operator.code: default_operator} if default_operator else {}
+        operation_assignments: list[dict[str, Any]] = []
+        for operation in pending_operations:
+            operator_code = assignment_by_seq.get(operation.seq)
+            if not operator_code and default_operator:
+                operator_code = default_operator.code
+            if not operator_code:
+                business_error(status.HTTP_400_BAD_REQUEST, "OPERATOR_NOT_ASSIGNED", "存在未指定操作员的工序")
+            assigned_operator = operator_cache.get(operator_code)
+            if not assigned_operator:
+                assigned_operator = await load_schedule_operator(session, actor.tenant_id, operator_code)
+                operator_cache[operator_code] = assigned_operator
+            await ensure_worker_can_run_operations(session, assigned_operator, [operation])
+            assign_operation_to_worker(operation, assigned_operator)
+            operation_assignments.append(
+                {
+                    "operation_seq": operation.seq,
+                    "operation_code": operation.operation_code_snapshot,
+                    "operator_code": assigned_operator.code,
+                    "operator_name": assigned_operator.name,
+                }
+            )
         work_order.status = "scheduled"
         first_pending.status = "ready"
         await write_audit_log(
@@ -507,7 +636,14 @@ async def schedule_work_order(session: AsyncSession, work_order_no: str, actor: 
             action="schedule",
             from_state="pending",
             to_state="scheduled",
-            detail={"ready_operation_id": str(first_pending.id), "ready_operation_seq": first_pending.seq},
+            detail={
+                "ready_operation_id": str(first_pending.id),
+                "ready_operation_seq": first_pending.seq,
+                "assignments": operation_assignments,
+            },
+        )
+        first_pending_operator = next(
+            item for item in operation_assignments if item["operation_seq"] == first_pending.seq
         )
         await write_audit_log(
             session,
@@ -518,11 +654,17 @@ async def schedule_work_order(session: AsyncSession, work_order_no: str, actor: 
             action="ready",
             from_state="pending",
             to_state="ready",
-            detail={"work_order_no": work_order.work_order_no, "operation_seq": first_pending.seq},
+            detail={
+                "work_order_no": work_order.work_order_no,
+                "operation_seq": first_pending.seq,
+                "assigned_operator_code": first_pending_operator["operator_code"],
+                "assigned_operator_name": first_pending_operator["operator_name"],
+            },
         )
         await session.flush()
         await session.refresh(work_order, attribute_names=["updated_at"])
-        await session.refresh(first_pending, attribute_names=["updated_at"])
+        for operation in operations:
+            await session.refresh(operation, attribute_names=["updated_at"])
         return serialize_work_order(work_order)
 
 
@@ -562,6 +704,31 @@ async def cancel_work_order(
                 f"当前工单状态为 {work_order.status}，不能取消",
             )
         from_state = work_order.status
+        active_wip_operations = [
+            operation
+            for operation in work_order.operations
+            if operation.status in {"in_progress", "reporting", "paused"}
+        ]
+        if active_wip_operations and not payload.allow_abandon_wip:
+            business_error(
+                status.HTTP_400_BAD_REQUEST,
+                "CANCEL_HAS_ACTIVE_WIP",
+                "工单存在已开工或暂停的工序，请先报工处理在制品，或明确允许放弃在制品后再取消",
+                {
+                    "operations": [
+                        {
+                            "operation_id": str(operation.id),
+                            "operation_seq": operation.seq,
+                            "operation_code": operation.operation_code_snapshot,
+                            "status": operation.status,
+                            "started_by_operator_code": operation.started_by_operator_code,
+                            "started_by_operator_name": operation.started_by_operator_name,
+                        }
+                        for operation in sorted(active_wip_operations, key=lambda item: item.seq)
+                    ]
+                },
+            )
+        active_wip_operation_ids = {operation.id for operation in active_wip_operations}
         changed_operations = []
         for operation in work_order.operations:
             if operation.status not in {"done", "cancelled"}:
@@ -581,6 +748,7 @@ async def cancel_work_order(
                         "work_order_no": work_order.work_order_no,
                         "operation_seq": operation.seq,
                         "reason": payload.reason,
+                        "abandoned_wip": operation.id in active_wip_operation_ids,
                     },
                 )
         work_order.status = "cancelled"
@@ -593,7 +761,21 @@ async def cancel_work_order(
             action="cancel",
             from_state=from_state,
             to_state="cancelled",
-            detail={"work_order_no": work_order.work_order_no, "reason": payload.reason},
+            detail={
+                "work_order_no": work_order.work_order_no,
+                "reason": payload.reason,
+                "allow_abandon_wip": payload.allow_abandon_wip,
+                "abandoned_wip_operations": [
+                    {
+                        "operation_id": str(operation.id),
+                        "operation_seq": operation.seq,
+                        "operation_code": operation.operation_code_snapshot,
+                        "started_by_operator_code": operation.started_by_operator_code,
+                        "started_by_operator_name": operation.started_by_operator_name,
+                    }
+                    for operation in sorted(active_wip_operations, key=lambda item: item.seq)
+                ],
+            },
         )
         await session.flush()
         await session.refresh(work_order, attribute_names=["updated_at"])
@@ -629,7 +811,6 @@ async def kitting_check(session: AsyncSession, work_order_no: str, actor: Actor)
                 "expected_arrival": None,
             }
             for row in sorted(work_order.materials, key=lambda item: item.component_code_snapshot)
-            if row.required_qty <= 0
         ],
         "checked_at": utcnow(),
     }
@@ -654,6 +835,10 @@ def serialize_clock_record(record: ClockRecord) -> dict[str, Any]:
         "operator_name": record.operator_name_snapshot,
         "started_at": record.started_at,
         "ended_at": record.ended_at,
+        "elapsed_seconds": record.elapsed_seconds,
+        "time_anomaly": record.time_anomaly,
+        "time_anomaly_reason": record.time_anomaly_reason,
+        "time_anomaly_detail": record.time_anomaly_detail,
         "good_qty": record.good_qty,
         "bad_qty": record.bad_qty,
         "defects": record.defects,
@@ -843,13 +1028,14 @@ async def receive_work_order(
     return response
 
 
-def serialize_audit_event(event: AuditLog) -> dict[str, Any]:
+def serialize_audit_event(event: AuditLog, actor_names: dict[str, str] | None = None) -> dict[str, Any]:
     return {
         "id": event.id,
         "entity_type": event.entity_type,
         "entity_id": event.entity_id,
         "action": event.action,
         "actor_code": event.actor_code,
+        "actor_name": actor_names.get(event.actor_code) if actor_names else None,
         "from_state": event.from_state,
         "to_state": event.to_state,
         "detail": event.detail,
@@ -901,6 +1087,38 @@ def trace_title_for_audit(event: AuditLog) -> str:
         }
         return labels.get(event.action, f"质检 {event.action}")
     return event.action
+
+
+async def load_actor_names(session: AsyncSession, tenant_id: UUID, codes: set[str]) -> dict[str, str]:
+    if not codes:
+        return {}
+    actor_names: dict[str, str] = {}
+    workers = list(
+        await session.scalars(
+            select(Worker).where(
+                Worker.tenant_id == tenant_id,
+                Worker.code.in_(codes),
+                Worker.deleted_at.is_(None),
+            )
+        )
+    )
+    for worker in workers:
+        actor_names[worker.code] = worker.name
+
+    missing_codes = codes - set(actor_names)
+    if missing_codes:
+        users = list(
+            await session.scalars(
+                select(UserAccount).where(
+                    UserAccount.tenant_id == tenant_id,
+                    UserAccount.username.in_(missing_codes),
+                    UserAccount.deleted_at.is_(None),
+                )
+            )
+        )
+        for user in users:
+            actor_names[user.username] = user.display_name
+    return actor_names
 
 
 async def get_work_order_traceability(session: AsyncSession, work_order_no: str, actor: Actor) -> dict[str, Any]:
@@ -963,6 +1181,17 @@ async def get_work_order_traceability(session: AsyncSession, work_order_no: str,
         )
     )
 
+    actor_codes = {
+        code
+        for code in [
+            *(event.actor_code for event in audit_events),
+            *(record.operator_code_snapshot for record in clock_records),
+            *(receipt.received_by for receipt in receipts),
+            *(record.inspector_code_snapshot for record in quality_records),
+        ]
+        if code
+    }
+    actor_names = await load_actor_names(session, actor.tenant_id, actor_codes)
     work_order_payload = serialize_work_order(work_order)
     audit_timeline = [
         {
@@ -970,6 +1199,7 @@ async def get_work_order_traceability(session: AsyncSession, work_order_no: str,
             "title": trace_title_for_audit(event),
             "occurred_at": event.created_at,
             "actor_code": event.actor_code,
+            "actor_name": actor_names.get(event.actor_code),
             "operation_seq": event.detail.get("operation_seq") if event.detail else None,
             "good_qty": None,
             "bad_qty": None,
@@ -983,6 +1213,7 @@ async def get_work_order_traceability(session: AsyncSession, work_order_no: str,
             "title": f"报工 {record.good_qty}/{record.bad_qty}",
             "occurred_at": record.ended_at,
             "actor_code": record.operator_code_snapshot,
+            "actor_name": record.operator_name_snapshot or actor_names.get(record.operator_code_snapshot or ""),
             "operation_seq": record.operation_seq_snapshot,
             "good_qty": record.good_qty,
             "bad_qty": record.bad_qty,
@@ -990,6 +1221,10 @@ async def get_work_order_traceability(session: AsyncSession, work_order_no: str,
                 "operation_name": record.operation_name_snapshot,
                 "work_center": record.work_center_name_snapshot,
                 "remark": record.remark,
+                "elapsed_seconds": record.elapsed_seconds,
+                "time_anomaly": record.time_anomaly,
+                "time_anomaly_reason": record.time_anomaly_reason,
+                "time_anomaly_detail": record.time_anomaly_detail,
             },
         }
         for record in clock_records
@@ -1000,6 +1235,7 @@ async def get_work_order_traceability(session: AsyncSession, work_order_no: str,
             "title": f"完工入库 {receipt.good_qty}",
             "occurred_at": receipt.received_at,
             "actor_code": receipt.received_by,
+            "actor_name": actor_names.get(receipt.received_by),
             "operation_seq": None,
             "good_qty": receipt.good_qty,
             "bad_qty": None,
@@ -1017,6 +1253,7 @@ async def get_work_order_traceability(session: AsyncSession, work_order_no: str,
             "title": f"质检 {record.inspect_type} {record.result}",
             "occurred_at": record.inspected_at,
             "actor_code": record.inspector_code_snapshot,
+            "actor_name": record.inspector_name_snapshot or actor_names.get(record.inspector_code_snapshot or ""),
             "operation_seq": record.operation_seq_snapshot,
             "good_qty": record.pass_qty,
             "bad_qty": record.fail_qty,
@@ -1045,6 +1282,6 @@ async def get_work_order_traceability(session: AsyncSession, work_order_no: str,
         "clock_records": [serialize_clock_record(record) for record in clock_records],
         "receipts": [serialize_production_receipt(receipt) for receipt in receipts],
         "quality_records": [serialize_quality_record_for_trace(record) for record in quality_records],
-        "audit_events": [serialize_audit_event(event) for event in audit_events],
+        "audit_events": [serialize_audit_event(event, actor_names) for event in audit_events],
         "timeline": timeline,
     }

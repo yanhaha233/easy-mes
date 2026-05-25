@@ -6,6 +6,9 @@ export interface CurrentUser {
   username: string
   display_name: string
   role: UserRole
+  worker_id: string | null
+  worker_code: string | null
+  worker_name: string | null
 }
 
 export interface LoginResponse {

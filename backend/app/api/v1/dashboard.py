@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, time
 from decimal import Decimal
 from typing import Any
 
@@ -5,18 +6,26 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import Actor, get_any_authenticated_actor
+from app.api.deps import Actor, require_roles
 from app.db.session import get_db_session
-from app.models.production import WorkOrder, WorkOrderOperation
+from app.models.production import ClockRecord, WorkOrder, WorkOrderOperation
 from app.schemas.dashboard import WorkOrderDashboardRead
 
 router = APIRouter(tags=["dashboard"])
 
 
+def start_of_day(value: datetime) -> datetime:
+    return datetime.combine(value.date(), time.min, tzinfo=UTC)
+
+
+def end_of_day(value: datetime) -> datetime:
+    return datetime.combine(value.date(), time.max, tzinfo=UTC)
+
+
 @router.get("/dashboard/work-orders", response_model=WorkOrderDashboardRead)
 async def get_work_order_dashboard(
     db: AsyncSession = Depends(get_db_session),
-    actor: Actor = Depends(get_any_authenticated_actor),
+    actor: Actor = Depends(require_roles("planner", "admin")),
 ) -> dict[str, Any]:
     status_rows = await db.execute(
         select(WorkOrder.status, func.count())
@@ -44,11 +53,17 @@ async def get_work_order_dashboard(
             WorkOrderOperation.status == "in_progress",
         )
     )
+    now = datetime.now(UTC)
     output = await db.execute(
         select(
-            func.coalesce(func.sum(WorkOrder.actual_good_qty), 0),
-            func.coalesce(func.sum(WorkOrder.actual_bad_qty), 0),
-        ).where(WorkOrder.tenant_id == actor.tenant_id, WorkOrder.deleted_at.is_(None))
+            func.coalesce(func.sum(ClockRecord.good_qty), 0),
+            func.coalesce(func.sum(ClockRecord.bad_qty), 0),
+        ).where(
+            ClockRecord.tenant_id == actor.tenant_id,
+            ClockRecord.deleted_at.is_(None),
+            ClockRecord.ended_at >= start_of_day(now),
+            ClockRecord.ended_at <= end_of_day(now),
+        )
     )
     actual_good_qty, actual_bad_qty = output.one()
 

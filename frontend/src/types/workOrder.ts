@@ -60,6 +60,8 @@ export interface WorkOrderOperation extends EntityRead {
   good_qty: string
   bad_qty: string
   status: OperationStatus
+  assigned_operator_code: string | null
+  assigned_operator_name: string | null
   started_at: string | null
   started_by_operator_code: string | null
   started_by_operator_name: string | null
@@ -99,6 +101,8 @@ export interface WorkOrderListItem extends EntityRead {
   status: WorkOrderStatus
   customer_name: string | null
   created_by: string
+  assigned_operator_codes: string[]
+  assigned_operator_names: string[]
 }
 
 export interface WorkOrderCreatePayload {
@@ -110,6 +114,14 @@ export interface WorkOrderCreatePayload {
   external_ref: string | null
   customer_name: string | null
   remark: string | null
+}
+
+export interface WorkOrderSchedulePayload {
+  operator_code: string | null
+  operation_assignments?: Array<{
+    operation_seq: number
+    operator_code: string
+  }>
 }
 
 export interface ProductionReceiptCreatePayload {
@@ -151,6 +163,10 @@ export interface TraceClockRecord extends EntityRead {
   operator_name: string | null
   started_at: string
   ended_at: string
+  elapsed_seconds: number | null
+  time_anomaly: boolean
+  time_anomaly_reason: string | null
+  time_anomaly_detail: Record<string, unknown> | null
   good_qty: string
   bad_qty: string
   defects: unknown[]
@@ -164,6 +180,7 @@ export interface TraceAuditEvent {
   entity_id: UUID | null
   action: string
   actor_code: string
+  actor_name: string | null
   from_state: string | null
   to_state: string | null
   detail: Record<string, unknown>
@@ -175,6 +192,7 @@ export interface TraceTimelineEvent {
   title: string
   occurred_at: string
   actor_code: string | null
+  actor_name: string | null
   operation_seq: number | null
   good_qty: string | null
   bad_qty: string | null

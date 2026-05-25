@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { getCurrentUser, login as loginApi } from '../api/auth'
+import { getCurrentUser, login as loginApi, logout as logoutApi } from '../api/auth'
 import { AUTH_TOKEN_STORAGE_KEY } from '../api/client'
 import type { CurrentUser } from '../types/auth'
 
@@ -36,6 +36,14 @@ export const useAuthStore = defineStore('auth', () => {
     ready.value = true
   }
 
+  function clearSession() {
+    token.value = null
+    user.value = null
+    window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY)
+    window.localStorage.removeItem(USER_STORAGE_KEY)
+    ready.value = true
+  }
+
   async function restore() {
     if (!token.value) {
       ready.value = true
@@ -45,18 +53,20 @@ export const useAuthStore = defineStore('auth', () => {
       user.value = await getCurrentUser()
       window.localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user.value))
     } catch {
-      logout()
+      clearSession()
     } finally {
       ready.value = true
     }
   }
 
-  function logout() {
-    token.value = null
-    user.value = null
-    window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY)
-    window.localStorage.removeItem(USER_STORAGE_KEY)
-    ready.value = true
+  async function logout() {
+    try {
+      if (token.value) {
+        await logoutApi()
+      }
+    } finally {
+      clearSession()
+    }
   }
 
   return {
@@ -64,6 +74,7 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     ready,
     isAuthenticated,
+    clearSession,
     login,
     logout,
     restore,

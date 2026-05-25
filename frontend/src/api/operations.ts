@@ -5,13 +5,17 @@ export async function getOperationByQr(code: string) {
   return apiRequest<OperationRead>('/operations/by-qr', { query: { code } })
 }
 
+export async function listOperationWorkbench(statuses = 'paused,in_progress,ready') {
+  return apiRequest<OperationRead[]>('/operations/workbench', { query: { statuses, limit: 50 } })
+}
+
 export async function startOperation(operationId: string) {
   return apiRequest<OperationRead>(`/operations/${operationId}/start`, {
     method: 'POST',
     headers: {
       'Idempotency-Key': crypto.randomUUID(),
     },
-    body: JSON.stringify({ operator_code: 'default_operator' }),
+    body: JSON.stringify({}),
   })
 }
 
@@ -21,7 +25,7 @@ export async function pauseOperation(operationId: string, reason = '现场暂停
     headers: {
       'Idempotency-Key': crypto.randomUUID(),
     },
-    body: JSON.stringify({ operator_code: 'default_operator', reason }),
+    body: JSON.stringify({ reason }),
   })
 }
 
@@ -31,7 +35,7 @@ export async function resumeOperation(operationId: string, reason = '恢复生�
     headers: {
       'Idempotency-Key': crypto.randomUUID(),
     },
-    body: JSON.stringify({ operator_code: 'default_operator', reason }),
+    body: JSON.stringify({ reason }),
   })
 }
 
@@ -40,7 +44,7 @@ export interface ClockPayload {
   bad_qty: string
   defects: Array<{ reason_code: string; qty: string }>
   actual_materials: Array<{ material_code: string; qty: string; lot_no?: string | null }>
-  operator_code: string
+  operator_code?: string
   remark: string | null
 }
 

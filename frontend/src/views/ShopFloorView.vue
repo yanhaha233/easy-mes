@@ -2,9 +2,9 @@
   <main class="page shop-page">
     <section class="page-hero compact">
       <div>
-        <p class="eyebrow">默认操作员</p>
+        <p class="eyebrow">{{ operatorLabel }}</p>
         <h1>车间报工</h1>
-        <p class="hero-copy">输入工单号或工序码，进入当前可操作工序。</p>
+        <p class="hero-copy">系统会记住本人暂停和进行中的工序，待开工任务可直接领取。</p>
       </div>
     </section>
 
@@ -19,6 +19,36 @@
         />
         <el-button type="primary" :loading="loading" @click="loadOperation">进入</el-button>
       </div>
+    </section>
+
+    <section class="sheet workbench-sheet">
+      <div class="section-header">
+        <div>
+          <p class="eyebrow">我的任务</p>
+          <h2>继续生产</h2>
+        </div>
+        <el-button :loading="workbenchLoading" :icon="Refresh" @click="loadWorkbench">刷新</el-button>
+      </div>
+      <div v-if="workbenchOperations.length" v-loading="workbenchLoading" class="workbench-list">
+        <button
+          v-for="item in workbenchOperations"
+          :key="item.id"
+          class="workbench-card"
+          type="button"
+          @click="selectWorkbenchOperation(item)"
+        >
+          <span class="workbench-card__main">
+            <strong>{{ item.work_order_no }}</strong>
+            <span>{{ item.seq }} {{ item.operation_name }} · {{ item.work_center_name }}</span>
+            <small v-if="item.started_by_operator_name">操作员 {{ item.started_by_operator_name }}</small>
+            <small v-if="item.assigned_operator_name">派工 {{ item.assigned_operator_name }}</small>
+          </span>
+          <el-tag :type="operationTag(item.status)" effect="plain">
+            {{ item.status === 'paused' ? '暂停中' : operationStatusLabels[item.status] }}
+          </el-tag>
+        </button>
+      </div>
+      <el-empty v-else :image-size="80" description="暂无可继续的工序" />
     </section>
 
     <section v-if="operation" class="sheet operation-sheet">
@@ -95,20 +125,31 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { Search } from '@element-plus/icons-vue'
+import { Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { ApiError } from '../api/client'
-import { listMaster } from '../api/masterData'
-import { clockOperation, getOperationByQr, pauseOperation, resumeOperation, startOperation } from '../api/operations'
+import {
+  clockOperation,
+  getOperationByQr,
+  listOperationWorkbench,
+  pauseOperation,
+  resumeOperation,
+  startOperation,
+} from '../api/operations'
+import { listQualityDefectReasons } from '../api/quality'
+import { useAuthStore } from '../stores/auth'
 import type { DefectReason } from '../types/masterData'
 import type { OperationRead } from '../types/operation'
 import type { OperationStatus } from '../types/workOrder'
 import { operationStatusLabels } from '../utils/labels'
 
 const qrCode = ref('')
+const authStore = useAuthStore()
 const loading = ref(false)
 const saving = ref(false)
+const workbenchLoading = ref(false)
 const operation = ref<OperationRead | null>(null)
+const workbenchOperations = ref<OperationRead[]>([])
 const defectReasons = ref<DefectReason[]>([])
 
 const clockForm = reactive({
@@ -121,8 +162,18 @@ const clockForm = reactive({
 const defectReasonOptions = computed(() =>
   defectReasons.value.map((item) => ({ label: `${item.code} ${item.name}`, value: item.code })),
 )
+const operatorLabel = computed(() => {
+  const user = authStore.user
+  if (!user) {
+    return '操作员'
+  }
+  return user.worker_name ? `${user.worker_name} / ${user.display_name}` : user.display_name
+})
 
-onMounted(loadDefectReasons)
+onMounted(() => {
+  loadDefectReasons()
+  loadWorkbench()
+})
 
 function showError(error: unknown) {
   if (error instanceof ApiError) {
@@ -134,11 +185,35 @@ function showError(error: unknown) {
 
 async function loadDefectReasons() {
   try {
-    const page = await listMaster('defectReasons', { is_active: true, limit: 100, offset: 0 })
-    defectReasons.value = page.items
+    defectReasons.value = await listQualityDefectReasons()
   } catch (error) {
     showError(error)
   }
+}
+
+async function loadWorkbench() {
+  workbenchLoading.value = true
+  try {
+    workbenchOperations.value = await listOperationWorkbench()
+  } catch (error) {
+    showError(error)
+  } finally {
+    workbenchLoading.value = false
+  }
+}
+
+function resetClockForm(nextOperation: OperationRead) {
+  const remain = Number(nextOperation.planned_qty) - Number(nextOperation.good_qty) - Number(nextOperation.bad_qty)
+  clockForm.good_qty = String(Math.max(remain, 1))
+  clockForm.bad_qty = '0'
+  clockForm.defect_reason_code = ''
+  clockForm.remark = ''
+}
+
+function selectWorkbenchOperation(item: OperationRead) {
+  operation.value = item
+  qrCode.value = item.work_order_no
+  resetClockForm(item)
 }
 
 async function loadOperation() {
@@ -149,11 +224,7 @@ async function loadOperation() {
   loading.value = true
   try {
     operation.value = await getOperationByQr(qrCode.value.trim())
-    const remain = Number(operation.value.planned_qty) - Number(operation.value.good_qty) - Number(operation.value.bad_qty)
-    clockForm.good_qty = String(Math.max(remain, 1))
-    clockForm.bad_qty = '0'
-    clockForm.defect_reason_code = ''
-    clockForm.remark = ''
+    resetClockForm(operation.value)
   } catch (error) {
     showError(error)
   } finally {
@@ -168,6 +239,7 @@ async function handleStart() {
   saving.value = true
   try {
     operation.value = await startOperation(operation.value.id)
+    await loadWorkbench()
     ElMessage.success('已开工')
   } catch (error) {
     showError(error)
@@ -183,6 +255,7 @@ async function handlePause() {
   saving.value = true
   try {
     operation.value = await pauseOperation(operation.value.id)
+    await loadWorkbench()
     ElMessage.success('已暂停')
   } catch (error) {
     showError(error)
@@ -198,6 +271,7 @@ async function handleResume() {
   saving.value = true
   try {
     operation.value = await resumeOperation(operation.value.id)
+    await loadWorkbench()
     ElMessage.success('已恢复')
   } catch (error) {
     showError(error)
@@ -232,11 +306,17 @@ async function handleClock() {
       bad_qty: clockForm.bad_qty,
       defects: badQty > 0 ? [{ reason_code: clockForm.defect_reason_code, qty: clockForm.bad_qty }] : [],
       actual_materials: [],
-      operator_code: 'default_operator',
       remark: clockForm.remark.trim() || null,
     })
     operation.value = response.operation
-    ElMessage.success(response.work_order_status === 'completed' ? '报工完成，工单已完工' : '报工完成，下一工序已就绪')
+    await loadWorkbench()
+    const successMessage =
+      response.work_order_status === 'completed' ? '报工完成，工单已完工' : '报工完成，下一工序已就绪'
+    if (response.time_anomaly) {
+      ElMessage.warning(`${successMessage}；本次用时偏短，已标记到追溯流水`)
+    } else {
+      ElMessage.success(successMessage)
+    }
   } catch (error) {
     showError(error)
   } finally {

@@ -11,3 +11,9 @@ export function login(username: string, password: string) {
 export function getCurrentUser() {
   return apiRequest<CurrentUser>('/auth/me')
 }
+
+export function logout() {
+  return apiRequest<void>('/auth/logout', {
+    method: 'POST',
+  })
+}

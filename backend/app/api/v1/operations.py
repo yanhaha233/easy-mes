@@ -16,6 +16,7 @@ from app.schemas.operation import (
 from app.services.operation import (
     clock_operation,
     get_operation_by_qr,
+    list_workbench_operations,
     pause_operation,
     resume_operation,
     start_operation,
@@ -31,6 +32,17 @@ def require_idempotency_key(idempotency_key: str | None) -> str:
             detail={"code": "IDEMPOTENCY_KEY_REQUIRED", "message": "缺少 Idempotency-Key 请求头"},
         )
     return idempotency_key
+
+
+@router.get("/operations/workbench", response_model=list[OperationRead])
+async def list_operation_workbench_endpoint(
+    statuses: str = Query(default="paused,in_progress,ready"),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db_session),
+    actor: Actor = Depends(get_default_operator_actor),
+) -> list[dict[str, Any]]:
+    status_list = [item.strip() for item in statuses.split(",") if item.strip()]
+    return await list_workbench_operations(db, actor, status_list, limit)
 
 
 @router.get("/operations/by-qr", response_model=OperationRead)

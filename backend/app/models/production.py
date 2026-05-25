@@ -2,7 +2,19 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -94,6 +106,9 @@ class WorkOrderOperation(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base)
     good_qty: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=Decimal("0"))
     bad_qty: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=Decimal("0"))
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    assigned_operator_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    assigned_operator_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    assigned_operator_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_by_operator_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     started_by_operator_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -102,6 +117,10 @@ class WorkOrderOperation(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base)
 
 class ClockRecord(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
     __tablename__ = "clock_records"
+    __table_args__ = (
+        Index("ix_clock_records_tenant_ended", "tenant_id", "ended_at"),
+        Index("ix_clock_records_tenant_work_center_ended", "tenant_id", "work_center_id", "ended_at"),
+    )
 
     work_order_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("work_orders.id"))
     operation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("work_order_operations.id"))
@@ -117,6 +136,10 @@ class ClockRecord(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
     operator_name_snapshot: Mapped[str | None] = mapped_column(String(128), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    elapsed_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    time_anomaly: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    time_anomaly_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    time_anomaly_detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     good_qty: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     bad_qty: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     defects: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
@@ -167,7 +190,10 @@ class QualityRecord(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
 
 class IdempotencyKey(UuidPrimaryKeyMixin, Base):
     __tablename__ = "idempotency_keys"
-    __table_args__ = (UniqueConstraint("tenant_id", "key", name="uq_idempotency_keys_tenant_key"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "key", name="uq_idempotency_keys_tenant_key"),
+        Index("ix_idempotency_keys_tenant_expires", "tenant_id", "expires_at"),
+    )
 
     tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     key: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -179,6 +205,10 @@ class IdempotencyKey(UuidPrimaryKeyMixin, Base):
 
 class AuditLog(UuidPrimaryKeyMixin, Base):
     __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_logs_tenant_entity_created", "tenant_id", "entity_type", "entity_id", "created_at"),
+        Index("ix_audit_logs_tenant_created", "tenant_id", "created_at"),
+    )
 
     tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     entity_type: Mapped[str] = mapped_column(String(64), nullable=False)

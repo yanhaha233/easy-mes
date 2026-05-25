@@ -1,5 +1,6 @@
 const API_BASE = '/api/v1'
 export const AUTH_TOKEN_STORAGE_KEY = 'easy_mes_access_token'
+export const AUTH_EXPIRED_EVENT = 'easy-mes:auth-expired'
 
 export class ApiError extends Error {
   status: number
@@ -71,7 +72,11 @@ export async function apiRequest<T>(
   })
 
   if (!response.ok) {
-    throw new ApiError(response.status, await readError(response))
+    const message = await readError(response)
+    if (response.status === 401 && path !== '/auth/login') {
+      window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT))
+    }
+    throw new ApiError(response.status, message)
   }
 
   if (response.status === 204) {

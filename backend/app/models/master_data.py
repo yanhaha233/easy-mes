@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -60,6 +60,26 @@ class Worker(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     team: Mapped[Team | None] = relationship(back_populates="workers")
+    operation_skills: Mapped[list["WorkerOperationSkill"]] = relationship(
+        cascade="all, delete-orphan",
+        back_populates="worker",
+    )
+
+
+class WorkerOperationSkill(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
+    __tablename__ = "worker_operation_skills"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "worker_id", "operation_code", name="uq_worker_operation_skills_scope"),
+        Index("ix_worker_operation_skills_operation", "tenant_id", "operation_code", "is_active"),
+    )
+
+    worker_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("workers.id"), nullable=False)
+    operation_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation_name_snapshot: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    worker: Mapped[Worker] = relationship(back_populates="operation_skills")
 
 
 class DefectReason(UuidPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):

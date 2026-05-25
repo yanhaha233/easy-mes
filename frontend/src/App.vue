@@ -1,7 +1,7 @@
 <template>
   <div class="app-shell">
     <header v-if="!isLoginRoute" class="app-header">
-      <RouterLink class="brand" to="/">
+      <RouterLink class="brand" :to="homeTo">
         <span class="brand__mark">EM</span>
         <span>
           <strong>Easy MES</strong>
@@ -34,10 +34,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { DataBoard, Files, Stopwatch, SwitchButton, Tickets, Warning } from '@element-plus/icons-vue'
 
+import { AUTH_EXPIRED_EVENT } from './api/client'
 import { useAuthStore } from './stores/auth'
 import type { UserRole } from './types/auth'
 
@@ -68,9 +69,24 @@ const navItems: NavItem[] = [
 ]
 
 const isLoginRoute = computed(() => route.name === 'login')
+const homeTo = computed(() => {
+  const role = authStore.user?.role
+  if (role === 'operator') {
+    return '/shop-floor'
+  }
+  if (role === 'inspector') {
+    return '/quality'
+  }
+  return '/'
+})
 const visibleNavItems = computed(() => {
   const role = authStore.user?.role
-  return navItems.filter((item) => !item.roles?.length || (role && item.roles.includes(role)))
+  return navItems.filter((item) => {
+    if (item.to === '/') {
+      return role === 'planner' || role === 'admin'
+    }
+    return !item.roles?.length || (role && item.roles.includes(role))
+  })
 })
 const userLabel = computed(() => {
   const user = authStore.user
@@ -81,7 +97,22 @@ const userLabel = computed(() => {
 })
 
 async function logout() {
-  authStore.logout()
+  await authStore.logout()
   await router.replace('/login')
 }
+
+function handleAuthExpired() {
+  authStore.clearSession()
+  if (route.name !== 'login') {
+    router.replace({ name: 'login', query: { redirect: route.fullPath } })
+  }
+}
+
+onMounted(() => {
+  window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired)
+})
+
+onUnmounted(() => {
+  window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired)
+})
 </script>

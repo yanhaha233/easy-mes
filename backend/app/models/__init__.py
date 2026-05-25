@@ -1,4 +1,4 @@
-from app.models.auth import UserAccount
+from app.models.auth import RevokedToken, UserAccount
 from app.models.base import Base
 from app.models.master_data import (
     Bom,
@@ -10,6 +10,7 @@ from app.models.master_data import (
     Team,
     WorkCenter,
     Worker,
+    WorkerOperationSkill,
 )
 from app.models.production import (
     AuditLog,
@@ -33,9 +34,11 @@ __all__ = [
     "Material",
     "Routing",
     "RoutingOperation",
+    "RevokedToken",
     "Team",
     "UserAccount",
     "WorkCenter",
+    "WorkerOperationSkill",
     "WorkOrder",
     "WorkOrderMaterial",
     "WorkOrderOperation",

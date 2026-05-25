@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -33,6 +33,17 @@ class ProductionReceiptCreate(BaseModel):
 
 class WorkOrderCancel(BaseModel):
     reason: str = Field(min_length=1, max_length=255)
+    allow_abandon_wip: bool = False
+
+
+class WorkOrderOperationAssignment(BaseModel):
+    operation_seq: int = Field(gt=0)
+    operator_code: str = Field(min_length=1, max_length=64)
+
+
+class WorkOrderSchedule(BaseModel):
+    operator_code: str | None = Field(default=None, max_length=64)
+    operation_assignments: list[WorkOrderOperationAssignment] = Field(default_factory=list)
 
 
 class WorkOrderMaterialRead(EntityRead):
@@ -62,6 +73,8 @@ class WorkOrderOperationRead(EntityRead):
     good_qty: Decimal
     bad_qty: Decimal
     status: OperationStatus
+    assigned_operator_code: str | None = None
+    assigned_operator_name: str | None = None
     started_at: datetime | None = None
     started_by_operator_code: str | None = None
     started_by_operator_name: str | None = None
@@ -121,6 +134,8 @@ class WorkOrderListItem(EntityRead):
     customer_name: str | None = None
     created_by: str
     created_at: datetime
+    assigned_operator_codes: list[str] = Field(default_factory=list)
+    assigned_operator_names: list[str] = Field(default_factory=list)
 
 
 class KittingShortageItem(BaseModel):
@@ -172,6 +187,10 @@ class TraceClockRecordRead(EntityRead):
     operator_name: str | None = None
     started_at: datetime
     ended_at: datetime
+    elapsed_seconds: int | None = None
+    time_anomaly: bool = False
+    time_anomaly_reason: str | None = None
+    time_anomaly_detail: dict[str, Any] | None = None
     good_qty: Decimal
     bad_qty: Decimal
     defects: list
@@ -202,6 +221,7 @@ class TraceAuditEventRead(BaseModel):
     entity_id: UUID | None = None
     action: str
     actor_code: str
+    actor_name: str | None = None
     from_state: str | None = None
     to_state: str | None = None
     detail: dict
@@ -213,6 +233,7 @@ class TraceTimelineEvent(BaseModel):
     title: str
     occurred_at: datetime
     actor_code: str | None = None
+    actor_name: str | None = None
     operation_seq: int | None = None
     good_qty: Decimal | None = None
     bad_qty: Decimal | None = None
